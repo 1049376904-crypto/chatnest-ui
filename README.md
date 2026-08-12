@@ -81,7 +81,7 @@ window.AGENT_APP_DEMO=false;
 
 然后实现下面这些接口。演示层在 `index.html` 末尾，每个分支上面都写了对应的契约，照着回就行。除 `/api/auth` 外都带 `Authorization: Bearer <token>`。
 
-模型那半边要不要花钱买 API 额度，见表格下面那一节——有订阅的话不用。
+模型那半边要不要花钱买 API 额度，见表格下面那一节——**自己给自己搭**的话不用，做成给别人用的东西就得用。
 
 | 接口 | 说明 |
 | --- | --- |
@@ -105,9 +105,17 @@ window.AGENT_APP_DEMO=false;
 | `GET /api/splash` | `{line}`，空会话上方那句招呼 |
 | `POST /api/warmup` | 预热模型进程，可以直接返回 `{ok:true}` |
 
-## 后端要不要 API key？——不要，可以走 Claude Code 订阅额度
+## 后端要不要 API key？——自己一个人用的话，可以走 Claude Code 订阅额度
 
-上面那张表里真正要接模型的只有 `POST /api/chat`（外加下面说的两条摘要）。这一份不一定要买 API 额度：你要是有 Claude 的 Pro / Max 订阅，装好 Claude Code CLI 之后，用官方的 `claude-agent-sdk` 就能直接复用 CLI 的登录态，全程不读 `ANTHROPIC_API_KEY`。
+> ⚠️ **先把线划清楚：下面这条路只适用于「自己给自己搭、用自己的账号、自己一个人用」。**
+>
+> Anthropic 官方文档写得很明白：未经事先批准，不允许第三方开发者把 claude.ai 登录或订阅额度提供给自己产品的用户，并且**点名包括基于 Claude Agent SDK 构建的 agent**，要求这种情况改用 API key 认证。见 [Agent SDK overview](https://code.claude.com/docs/en/agent-sdk/overview) 里的那条 Note。同一页也写明 Agent SDK 的使用受 [Commercial Terms](https://www.anthropic.com/legal/commercial-terms) 管辖，而 Pro / Max 订阅走的是 [Consumer Terms](https://www.anthropic.com/legal/consumer-terms)，两边并不是一回事。
+>
+> 所以：自己 self-host 自己用，没问题；**一旦你要把它做成给别人用的产品或服务**——多人共用、对外开放、或者让你的用户拿他们自己的 claude.ai 账号登录进来——**就请走 API key**，别拿订阅额度去撑一个对外的服务。
+>
+> 另外，Consumer Terms 里还有一条：除非通过 API key 或 Anthropic 另行明确许可，禁止以脚本、bot 等自动化方式访问服务。你要是打算加无人值守的定时任务（自动推送、定时生成之类），那部分严格讲是踩在这条上的，心里有数就行。
+
+上面那张表里真正要接模型的只有 `POST /api/chat`（外加下面说的两条摘要）。自己用的话不一定要买 API 额度：你要是有 Claude 的 Pro / Max 订阅，装好 Claude Code CLI 之后，用官方的 `claude-agent-sdk` 就能直接复用 CLI 的登录态，全程不读 `ANTHROPIC_API_KEY`。
 
 先把 CLI 装上、登录一次：
 

@@ -81,6 +81,8 @@ window.AGENT_APP_DEMO=false;
 
 然后实现下面这些接口。演示层在 `index.html` 末尾，每个分支上面都写了对应的契约，照着回就行。除 `/api/auth` 外都带 `Authorization: Bearer <token>`。
 
+模型那半边要不要花钱买 API 额度，见表格下面那一节——有订阅的话不用。
+
 | 接口 | 说明 |
 | --- | --- |
 | `POST /api/auth` | `{password}` → `{token}` |
@@ -102,6 +104,87 @@ window.AGENT_APP_DEMO=false;
 | `POST /api/tool-caption` | `{tool_name,tool_input,tool_output}` → `{caption}` |
 | `GET /api/splash` | `{line}`，空会话上方那句招呼 |
 | `POST /api/warmup` | 预热模型进程，可以直接返回 `{ok:true}` |
+
+## 后端要不要 API key？——不要，可以走 Claude Code 订阅额度
+
+上面那张表里真正要接模型的只有 `POST /api/chat`（外加下面说的两条摘要）。这一份不一定要买 API 额度：你要是有 Claude 的 Pro / Max 订阅，装好 Claude Code CLI 之后，用官方的 `claude-agent-sdk` 就能直接复用 CLI 的登录态，全程不读 `ANTHROPIC_API_KEY`。
+
+先把 CLI 装上、登录一次：
+
+```bash
+npm install -g @anthropic-ai/claude-code
+```
+
+```bash
+claude
+```
+
+首次启动会引导你登录；已经装过但没登的，进交互界面里输 `/login`。登完确认一下：
+
+```bash
+claude auth status
+```
+
+输出是一段 JSON，看到 `"loggedIn": true` 和你自己的邮箱才算数：
+
+```json
+{
+  "loggedIn": true,
+  "authMethod": "claude.ai",
+  "apiProvider": "firstParty",
+  "email": "you@example.com"
+}
+```
+
+⚠️ `claude login` 不是子命令，直接敲会报错，登录只能进交互界面走。
+
+⚠️ 授权那一下要开浏览器点，**必须是人来点**。如果你正让 AI agent 照着这篇帮你部署，它到这一步一定卡住，得你自己来一趟，别让它在那儿瞎试。
+
+然后 `pip install claude-agent-sdk`，最小骨架就这么长：
+
+```python
+import anyio
+from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, AssistantMessage, TextBlock
+
+
+async def ask(prompt: str) -> str:
+    options = ClaudeAgentOptions(
+        model="claude-haiku-4-5",
+        system_prompt="你是一个聊天助手，简短回答。",
+        allowed_tools=[],
+        max_turns=1,
+    )
+    client = ClaudeSDKClient(options)
+    await client.connect()
+    out = ""
+    try:
+        await client.query(prompt)
+        async for msg in client.receive_response():
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock):
+                        out += block.text
+    finally:
+        await client.disconnect()
+    return out
+
+
+print(anyio.run(ask, "用五个字证明你在线"))
+```
+
+跑起来会打印一句回复。这段是把 `ANTHROPIC_API_KEY` 从环境变量里摘干净之后跑的，照样出字——那就是订阅额度在干活。
+
+`receive_response()` 那个循环里收到的东西，按 SSE 吐给前端就是 `/api/chat` 要的那几个事件：文本对应 `delta`，思考对应 `thinking`，工具调用和结果对应 `tool_use` / `tool_result`。
+
+⚠️ 服务端不会替你检查登录态。没登录的话服务照样起得来、页面照样打得开、密码也照样登得进去，**只有发消息的那一刻才失败**。所以 `claude auth status` 那步别跳。
+
+### 摘要那两条别用贵模型
+
+`POST /api/thinking-summary` 和 `POST /api/tool-caption` 也是模型调用，而且频率比聊天本身高得多——每出一段思考、每调一次工具就是一发。它们要是跟主聊天用同一个模型，额度会掉得莫名其妙。
+
+两种省法：压到最便宜那档（比如上面示例里的 `claude-haiku-4-5`，仍然走订阅），或者干脆换一家免费的小模型专门干这个。这两条只要一句 15-20 字的中文概括，不需要多聪明的模型。
+
+想看完整实现，原项目 [ugui3u/chatnest](https://github.com/ugui3u/chatnest) 的 `full-stack/` 里有一整套：`app/actor.py` 是主聊天那条，`app/claude.py` 里的 `summarize_thinking` / `summarize_traces` 就是这两条摘要。
 
 ## 素材
 

@@ -8,10 +8,10 @@
 
 ```bash
 # 在项目根目录下运行
-python3 -m http.server 8000
+python3 -m http.server 8062
 ```
 
-然后访问 `http://localhost:8000`
+然后访问 `http://localhost:8062`
 
 ### 方式二：使用 Node.js 静态服务器
 
@@ -20,10 +20,10 @@ python3 -m http.server 8000
 npm install -g http-server
 
 # 在项目根目录下运行
-http-server -p 8000
+http-server -p 8062
 ```
 
-然后访问 `http://localhost:8000`
+然后访问 `http://localhost:8062`
 
 ### 方式三：使用 Nginx
 
@@ -37,7 +37,7 @@ cp -r . /usr/share/nginx/html/chatnest
 
 ```nginx
 server {
-    listen 80;
+    listen 8062;
     server_name localhost;
     
     location / {

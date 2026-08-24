@@ -12,8 +12,9 @@
 import json
 import sqlite3
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Iterator
 
 from server.config import DB_PATH
 
@@ -22,11 +23,24 @@ class ConversationNotFound(LookupError):
     pass
 
 
-def _connect() -> sqlite3.Connection:
+@contextmanager
+def _db() -> Iterator[sqlite3.Connection]:
+    """一次查询一个连接：进来开、出去提交并关掉。
+
+    注意 sqlite3 的 `with connection` 只负责提交/回滚，**不关连接**。
+    直接 `with sqlite3.connect(...) as db` 会一路漏文件描述符，
+    跑几千个请求之后就报 too many open files。
+    """
     connection = sqlite3.connect(DB_PATH)
     connection.row_factory = sqlite3.Row
+    # 这个 pragma 是 per-connection 的，每条连接都得重新开，
+    # 不开的话 conversations 删掉后 messages 会变成孤儿行。
     connection.execute("PRAGMA foreign_keys = ON")
-    return connection
+    try:
+        with connection:
+            yield connection
+    finally:
+        connection.close()
 
 
 def _now() -> str:
@@ -34,7 +48,7 @@ def _now() -> str:
 
 
 def initialize_store() -> None:
-    with _connect() as db:
+    with _db() as db:
         db.executescript(
             """
             CREATE TABLE IF NOT EXISTS conversations (
@@ -101,7 +115,7 @@ _MESSAGE_COLUMNS = """
 
 
 def conversation_list() -> list[dict[str, Any]]:
-    with _connect() as db:
+    with _db() as db:
         rows = db.execute(
             """
             SELECT conv_id, title, starred, created_at, updated_at
@@ -126,7 +140,7 @@ def conversation_list() -> list[dict[str, Any]]:
 def resolve_conversation(identifier: str | None) -> str | None:
     if not identifier:
         return None
-    with _connect() as db:
+    with _db() as db:
         row = db.execute(
             "SELECT conv_id FROM conversations WHERE conv_id = ?",
             (identifier,),
@@ -145,7 +159,7 @@ def ensure_conversation(
         return conv_id
     conv_id = str(uuid.uuid4())
     now = _now()
-    with _connect() as db:
+    with _db() as db:
         db.execute(
             """
             INSERT INTO conversations
@@ -167,7 +181,7 @@ def begin_turn(
     if conversation_id and not conv_id:
         raise ConversationNotFound("conversation not found")
     now = _now()
-    with _connect() as db:
+    with _db() as db:
         if not conv_id:
             conv_id = str(uuid.uuid4())
             db.execute(
@@ -214,7 +228,7 @@ def complete_turn(
     traces: list | None = None,
 ) -> int:
     now = _now()
-    with _connect() as db:
+    with _db() as db:
         if not db.execute(
             "SELECT 1 FROM conversations WHERE conv_id = ?",
             (conv_id,),
@@ -244,7 +258,7 @@ def history_messages(
     turns: int = 30,
 ) -> list[dict[str, Any]]:
     """给模型的上下文：按 id 升序，最多末尾 turns 条。"""
-    with _connect() as db:
+    with _db() as db:
         params: list[Any] = [conv_id]
         clause = ""
         if through_id is not None:
@@ -280,7 +294,7 @@ def history_messages(
 
 def last_message_time(conv_id: str, before_id: int | None = None) -> str | None:
     """上一条消息的时间戳，给时钟算「多久没说话」。"""
-    with _connect() as db:
+    with _db() as db:
         params: list[Any] = [conv_id]
         clause = ""
         if before_id is not None:
@@ -342,7 +356,7 @@ def prepare_edit_turn(
     if not content:
         raise ValueError("消息不能为空")
     now = _now()
-    with _connect() as db:
+    with _db() as db:
         row = db.execute(
             "SELECT id, role, attachments_json FROM messages WHERE conv_id = ? AND id = ?",
             (resolved, message_id),
@@ -385,7 +399,7 @@ def prepare_retry_turn(
     if not resolved:
         raise ConversationNotFound("conversation not found")
     now = _now()
-    with _connect() as db:
+    with _db() as db:
         row = db.execute(
             "SELECT id, role FROM messages WHERE conv_id = ? AND id = ?",
             (resolved, assistant_message_id),
@@ -431,7 +445,7 @@ def restore_branch(branch_id: int | None) -> None:
     """模型这一轮失败时把砍掉的尾巴放回去。"""
     if not branch_id:
         return
-    with _connect() as db:
+    with _db() as db:
         branch = db.execute(
             "SELECT conv_id, tail_json FROM message_branches WHERE id = ?",
             (branch_id,),
@@ -496,7 +510,7 @@ def conversation_messages(
     if not resolved:
         raise ConversationNotFound("conversation not found")
     page_size = max(1, min(limit or 40, 200))
-    with _connect() as db:
+    with _db() as db:
         def fetch(clause: str, params: list[Any], desc: bool, size: int):
             order = "DESC" if desc else "ASC"
             return db.execute(
@@ -546,30 +560,43 @@ def conversation_messages(
     }
 
 
+def _like_pattern(value: str) -> str:
+    """把用户输入转成 LIKE 的字面量模式。
+
+    不转义的话搜一个 `%` 会命中全库，搜 `a_b` 会连 `axb` 一起捞出来。
+    反斜杠要先转，否则会把后面刚加的转义符再转一遍。
+    """
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+    return f"%{escaped}%"
+
+
 def search_messages(query: str, limit: int = 50) -> list[dict[str, Any]]:
     """全库搜聊天记录。LIKE 够用——个人库量级不值得上 FTS5。"""
     query = query.strip()
     if not query:
         return []
-    pattern = f"%{query}%"
-    with _connect() as db:
+    with _db() as db:
         rows = db.execute(
-            """
+            r"""
             SELECT m.id AS message_id, m.conv_id, m.role, m.text, m.timestamp,
                    c.title AS conv_title, c.starred
             FROM messages m
             JOIN conversations c ON c.conv_id = m.conv_id
-            WHERE m.text LIKE ? ESCAPE '\\'
+            WHERE m.text LIKE ? ESCAPE '\'
             ORDER BY m.id DESC
             LIMIT ?
             """,
-            (pattern, max(1, min(limit, 200))),
+            (_like_pattern(query), max(1, min(limit, 200))),
         ).fetchall()
     results = []
     for row in rows:
         text = row["text"] or ""
         index = text.lower().find(query.lower())
-        start = max(0, index - 30)
+        start = max(0, index - 30) if index >= 0 else 0
         snippet = text[start:start + 140].replace("\n", " ")
         if start > 0:
             snippet = "…" + snippet
@@ -593,7 +620,7 @@ def rename_conversation(conv_id: str, title: str) -> None:
     resolved = resolve_conversation(conv_id)
     if not resolved:
         raise ConversationNotFound("conversation not found")
-    with _connect() as db:
+    with _db() as db:
         db.execute(
             "UPDATE conversations SET title = ?, updated_at = ? WHERE conv_id = ?",
             (title.strip()[:120], _now(), resolved),
@@ -604,7 +631,7 @@ def star_conversation(conv_id: str, starred: bool) -> None:
     resolved = resolve_conversation(conv_id)
     if not resolved:
         raise ConversationNotFound("conversation not found")
-    with _connect() as db:
+    with _db() as db:
         db.execute(
             "UPDATE conversations SET starred = ? WHERE conv_id = ?",
             (int(starred), resolved),
@@ -615,5 +642,5 @@ def delete_conversation(conv_id: str) -> None:
     resolved = resolve_conversation(conv_id)
     if not resolved:
         raise ConversationNotFound("conversation not found")
-    with _connect() as db:
+    with _db() as db:
         db.execute("DELETE FROM conversations WHERE conv_id = ?", (resolved,))

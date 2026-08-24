@@ -1,6 +1,0 @@
-[
-  { "id": "claude-sonnet-4-6", "label": "Sonnet 4.6", "desc": "日常对话", "thinking": "adaptive", "primary": true },
-  { "id": "claude-opus-4-8", "label": "Opus 4.8", "desc": "复杂任务", "thinking": "adaptive", "primary": true },
-  { "id": "claude-haiku-4-5", "label": "Haiku 4.5", "desc": "快速回答", "thinking": "none", "primary": true },
-  { "id": "gpt-4o", "label": "GPT-4o", "desc": "OpenAI 通用", "thinking": "none", "primary": false }
-]

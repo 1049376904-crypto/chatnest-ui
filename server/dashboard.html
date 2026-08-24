@@ -14,9 +14,11 @@
     --dim: #9aa2b1;
     --accent: #5b8cff;
     --ok: #3fb950;
+    --warn: #d29922;
     --err: #f85149;
   }
   * { box-sizing: border-box; }
+  html, body { overscroll-behavior-y: none; }
   body {
     margin: 0;
     background: var(--bg);
@@ -27,8 +29,8 @@
     -webkit-text-size-adjust: 100%;
   }
   header {
-    position: sticky; top: 0; z-index: 10;
-    background: rgba(15,17,21,.92);
+    position: sticky; top: 0; z-index: 20;
+    background: rgba(15,17,21,.94);
     backdrop-filter: blur(8px);
     border-bottom: 1px solid var(--line);
     padding: 12px 16px;
@@ -68,12 +70,6 @@
     padding: 9px 11px;
     font: inherit;
     font-size: 14px;
-  }
-  textarea {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 13px; line-height: 1.5;
-    min-height: 300px; resize: vertical;
-    white-space: pre; overflow-wrap: normal; overflow-x: auto;
   }
   input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
   input::placeholder, textarea::placeholder { color: #5a6272; }
@@ -137,13 +133,59 @@
   .hide { display: none !important; }
   .muted { color: var(--dim); font-size: 13px; }
   .err-text { color: var(--err); font-size: 13px; margin-top: 6px; word-break: break-all; }
+  .ok-text { color: var(--ok); font-size: 13px; margin-top: 6px; }
   .sep { height: 1px; background: var(--line); margin: 14px 0; border: 0; }
 
-  /* 预览：把聊天页那几个类名的骨架搬过来，好让你写的选择器能命中。
-     变量值取自 index.html 的亮色主题。 */
+  /* ---- CSS 编辑器 ---- */
+  .editor-wrap { position: relative; }
+  #customCss {
+    /* 16px 是硬要求：iOS 上小于 16px 的输入框聚焦时会自动放大整页，
+       那就是你说的「画面移来移去」。 */
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 16px; line-height: 1.55;
+    height: 300px; resize: none;
+    white-space: pre; overflow-wrap: normal; overflow-x: auto;
+    tab-size: 2;
+  }
+  body.css-full { overflow: hidden; }
+  body.css-full .editor-wrap {
+    position: fixed; inset: 0; z-index: 60;
+    background: var(--bg); padding: 8px;
+    display: flex; flex-direction: column;
+  }
+  body.css-full #customCss {
+    flex: 1; height: auto; border-radius: 10px;
+  }
+  .editor-bar {
+    display: flex; gap: 8px; align-items: center;
+    padding: 6px 0; flex-wrap: wrap;
+  }
+  .editor-bar .grow { flex: 1; }
+  body:not(.css-full) .editor-bar .only-full { display: none; }
+  body.css-full .editor-bar .only-mini { display: none; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    font-size: 13px; padding: 6px 10px; border-radius: 999px;
+    border: 1px solid var(--line); background: var(--panel-2);
+    color: var(--text); cursor: pointer;
+  }
+  .chip small { display: block; color: var(--dim); font-size: 11px; }
+
+  .checkup { margin-top: 10px; }
+  .checkup .name {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 12.5px; padding: 3px 9px; border-radius: 6px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: #10131a; margin: 0 6px 6px 0;
+  }
+  .checkup .name.bad { color: #ffb4b0; box-shadow: inset 0 0 0 1px rgba(248,81,73,.45); }
+  .checkup .name.good { color: #9fd6a6; }
+  .suggest { font-size: 12.5px; color: var(--warn); margin: 4px 0 0; }
+
   #previewFrame {
-    width: 100%; height: 420px; border: 1px solid var(--line);
-    border-radius: 10px; background: #F8F8F6;
+    width: 100%; height: 460px; border: 1px solid var(--line);
+    border-radius: 10px; background: #F8F8F6; display: block;
   }
 </style>
 </head>
@@ -242,37 +284,54 @@
 
     <div data-panel="css" class="hide">
       <section>
+        <h2>片段库</h2>
+        <p class="hint">点一下插到编辑框末尾。类名都核对过，直接能用。</p>
+        <div class="chips" id="snippetList"></div>
+      </section>
+
+      <section>
         <h2>自定义 CSS</h2>
         <p class="hint">
-          写在这里的样式会接在聊天页 <code>&lt;/head&gt;</code> 最后，所以能盖住原有规则。
-          保存后聊天页刷新一下即生效。
+          接在聊天页 <code>&lt;/head&gt;</code> 最后，所以能盖住原有规则。保存后聊天页刷新即生效。
         </p>
         <div class="switch">
           <input type="checkbox" id="cssEnabled">
           <span>启用
-            <small>关掉只是不下发，正文还存着——方便你一键回到原样对比。</small>
+            <small>关掉只是不下发，正文还存着——方便一键回到原样对比。</small>
           </span>
         </div>
-        <div class="row">
-          <button class="fixed" id="previewBtn">预览</button>
-          <button class="fixed" id="insertVars">插入变量模版</button>
-          <div class="muted" id="cssMeta"></div>
+
+        <div class="editor-wrap" id="editorWrap">
+          <div class="editor-bar">
+            <button class="fixed only-mini" id="fullBtn">全屏编辑</button>
+            <button class="fixed only-full" id="exitFullBtn">退出全屏</button>
+            <button class="fixed" id="checkBtn">体检</button>
+            <button class="fixed" id="previewBtn">预览</button>
+            <div class="grow"></div>
+            <div class="muted" id="cssMeta"></div>
+          </div>
+          <textarea id="customCss" spellcheck="false" autocapitalize="off"
+            autocorrect="off" placeholder="从上面片段库挑一个，或者把找到的 CSS 贴进来。"></textarea>
         </div>
-        <textarea id="customCss" spellcheck="false" placeholder="/* 例：改气泡圆角和强调色 */&#10;:root {&#10;  --radius-bubble: 18px;&#10;  --accent: #7C9A6E;&#10;}"></textarea>
+
         <div class="err-text hide" id="cssErr"></div>
-        <hr class="sep">
-        <h2 style="font-size:14px">预览</h2>
+        <div class="checkup" id="checkupResult"></div>
+      </section>
+
+      <section>
+        <h2>预览</h2>
         <p class="hint">
-          这是个样本，不是真的聊天页——它只搬了气泡、输入条这几个类名和亮色主题变量。
-          针对侧欄、日记那些的样式得开聊天页看。
+          按聊天页真实结构搭的样本：<code>.msg-user</code> / <code>.msg-claude</code> /
+          <code>.bubble</code> / <code>.ai-bubble</code> / <code>.msg-layer</code>。
+          侧栏、日记那些不在样本里，改它们得开聊天页看。
         </p>
         <iframe id="previewFrame" title="预览"></iframe>
       </section>
 
       <section>
-        <h2>能改的变量</h2>
-        <p class="hint">聊天页自带这些变量。改变量比覆盖具体规则安全得多。</p>
-        <div class="tools" id="varList"></div>
+        <h2>关键类名</h2>
+        <p class="hint">写选择器时对着这张表。带 ✓ 的是在你这份前端里确认存在的。</p>
+        <div id="refList"></div>
       </section>
     </div>
 
@@ -307,6 +366,7 @@
   var KEY = "chatnest_token";
   var token = localStorage.getItem(KEY) || "";
   var state = null;
+  var snippets = [];
 
   var $ = function (id) { return document.getElementById(id); };
 
@@ -389,7 +449,10 @@
       document.querySelectorAll("[data-panel]").forEach(function (panel) {
         panel.classList.toggle("hide", panel.dataset.panel !== name);
       });
-      if (name === "css") renderPreview();
+      if (name === "css") {
+        loadCssExtras();
+        renderPreview();
+      }
     };
   });
 
@@ -406,32 +469,32 @@
       card.className = "card";
       card.innerHTML =
         '<div class="card-head">' +
-          '<strong>' + escape(model.label || model.id || "未命名") + '</strong>' +
+          "<strong>" + escape(model.label || model.id || "未命名") + "</strong>" +
           '<div class="grow"></div>' +
           '<button class="danger" data-del="' + index + '">删除</button>' +
-        '</div>' +
-        '<label>模型 ID（中转站的真名）</label>' +
+        "</div>" +
+        "<label>模型 ID（中转站的真名）</label>" +
         '<input type="text" data-f="id" data-i="' + index + '" value="' + escape(model.id) + '">' +
         '<div class="row">' +
-          '<div><label>显示名</label>' +
+          "<div><label>显示名</label>" +
             '<input type="text" data-f="label" data-i="' + index + '" value="' + escape(model.label) + '"></div>' +
-          '<div><label>一句说明</label>' +
+          "<div><label>一句说明</label>" +
             '<input type="text" data-f="desc" data-i="' + index + '" value="' + escape(model.desc) + '"></div>' +
-        '</div>' +
+        "</div>" +
         '<div class="row">' +
-          '<div><label>思考档位</label>' +
+          "<div><label>思考档位</label>" +
             '<select data-f="thinking" data-i="' + index + '">' +
               ["none", "adaptive", "extended"].map(function (option) {
                 return '<option value="' + option + '"' +
                   (model.thinking === option ? " selected" : "") + ">" + option + "</option>";
               }).join("") +
-            '</select></div>' +
-          '<div><label>主列表显示</label>' +
+            "</select></div>" +
+          "<div><label>主列表显示</label>" +
             '<select data-f="primary" data-i="' + index + '">' +
-              '<option value="1"' + (model.primary ? " selected" : "") + '>是</option>' +
-              '<option value="0"' + (!model.primary ? " selected" : "") + '>折叠</option>' +
-            '</select></div>' +
-        '</div>';
+              '<option value="1"' + (model.primary ? " selected" : "") + ">是</option>" +
+              '<option value="0"' + (!model.primary ? " selected" : "") + ">折叠</option>" +
+            "</select></div>" +
+        "</div>";
       host.appendChild(card);
     });
 
@@ -467,24 +530,24 @@
         : "未设置";
       card.innerHTML =
         '<div class="card-head">' +
-          '<strong>' + escape(server.name || "未命名") + '</strong>' +
-          '<span class="tag ' + (server.enabled ? 'on">已启用' : '">已停用') + '</span>' +
+          "<strong>" + escape(server.name || "未命名") + "</strong>" +
+          '<span class="tag ' + (server.enabled ? 'on">已启用' : '">已停用') + "</span>" +
           '<div class="grow"></div>' +
           '<button data-test="' + index + '">测试</button>' +
           '<button class="danger" data-del="' + index + '">删除</button>' +
-        '</div>' +
+        "</div>" +
         '<div class="row">' +
-          '<div><label>名字</label>' +
+          "<div><label>名字</label>" +
             '<input type="text" data-f="name" data-i="' + index + '" value="' + escape(server.name) + '"></div>' +
           '<div class="fixed"><label>启用</label>' +
             '<select data-f="enabled" data-i="' + index + '">' +
-              '<option value="1"' + (server.enabled ? " selected" : "") + '>是</option>' +
-              '<option value="0"' + (!server.enabled ? " selected" : "") + '>否</option>' +
-            '</select></div>' +
-        '</div>' +
-        '<label>地址</label>' +
+              '<option value="1"' + (server.enabled ? " selected" : "") + ">是</option>" +
+              '<option value="0"' + (!server.enabled ? " selected" : "") + ">否</option>" +
+            "</select></div>" +
+        "</div>" +
+        "<label>地址</label>" +
         '<input type="text" data-f="url" data-i="' + index + '" value="' + escape(server.url) + '" placeholder="http://172.17.0.1:8765/mcp">' +
-        '<label>Token <span class="muted">（' + tokenNote + '）</span></label>' +
+        '<label>Token <span class="muted">（' + tokenNote + "）</span></label>" +
         '<input type="password" data-f="token" data-i="' + index + '" value="" placeholder="Bearer token" autocomplete="off">' +
         '<div data-probe="' + index + '"></div>';
       host.appendChild(card);
@@ -524,7 +587,7 @@
             return;
           }
           slot.innerHTML =
-            '<p class="muted">连上了，' + data.tools.length + " 个工具：</p>" +
+            '<p class="ok-text">连上了，' + data.tools.length + " 个工具：</p>" +
             '<div class="tools">' +
             data.tools.map(function (tool) {
               return '<span title="' + escape(tool.description) + '">' + escape(tool.name) + "</span>";
@@ -562,7 +625,7 @@
 
   // ---------- 外观 ----------
 
-  // 取自 index.html 的亮色主题，给预览用。不求全，只要常用那几个。
+  // 亮色主题变量，取自 index.html。预览用。
   var PREVIEW_VARS = {
     "--bg-primary": "#F8F8F6",
     "--bg-surface": "#F6F6F4",
@@ -577,53 +640,69 @@
     "--font-serif": "ui-serif,Georgia,'PingFang SC',sans-serif",
     "--font-sans": "-apple-system,system-ui,'PingFang SC',sans-serif",
     "--text-base": "16px",
+    "--text-read": "16px",
+    "--text-sm": "13px",
     "--leading": "1.65",
     "--radius-bubble": "22px",
-    "--radius-lg": "28px",
+    "--radius-md": "12px",
     "--radius-full": "999px",
     "--msg-gap": "28px",
     "--page-pad": "16px",
+    "--input-btn-size": "36px",
     "--shadow-soft": "0 1px 3px rgba(31,30,29,.05)"
   };
 
-  var VAR_TEMPLATE = [
-    "/* 改变量比覆盖具体规则安全，上游更新也不容易冲掘。*/",
-    ":root {",
-    "  --accent: #DA7756;          /* 强调色（按钮、选中）*/",
-    "  --bubble-user: #EEEEEC;     /* 我发的气泡底色 */",
-    "  --bg-primary: #F8F8F6;      /* 页面底色 */",
-    "  --radius-bubble: 22px;      /* 气泡圆角 */",
-    "  --msg-gap: 28px;            /* 消息间距 */",
-    "  --text-base: 16px;          /* 正文字号 */",
-    "  --leading: 1.65;            /* 行高 */",
-    "}",
-    "",
-    "/* 气泡出现时柔和一点 */",
-    ".msg-row {",
-    "  animation: cn-rise 260ms cubic-bezier(.22,.61,.36,1) both;",
-    "}",
-    "@keyframes cn-rise {",
-    "  from { opacity: 0; transform: translateY(6px); }",
-    "  to   { opacity: 1; transform: none; }",
-    "}",
-    "",
-    "/* 装饰用的伪元素务必加这一行，不然会挡住长按菜单 */",
-    "/* .你的选择器::after { pointer-events: none; } */",
-    ""
-  ].join("\n");
+  function loadCssExtras() {
+    if (!snippets.length) {
+      api("/api/admin/css/snippets").then(function (data) {
+        snippets = data.snippets || [];
+        renderSnippets();
+      }).catch(function () {});
+    }
+    if (!$("refList").dataset.loaded) {
+      api("/api/admin/css/reference").then(function (data) {
+        var html = (data.key_classes || []).map(function (item) {
+          return '<div style="margin:5px 0"><code>' + escape(item.selector) + "</code> " +
+            (item.exists ? '<span class="tag on">✓</span>' : '<span class="tag">?</span>') +
+            ' <span class="muted">' + escape(item.note) + "</span></div>";
+        }).join("");
+        if (data.source) {
+          html += '<p class="hint" style="margin-top:10px">读的是 <code>' +
+            escape(data.source) + "</code></p>";
+        } else {
+          html += '<p class="err-text">找不到 index.html，体检和这张表都不准。' +
+            "可以用环境变量 FRONTEND_HTML 指定路径。</p>";
+        }
+        $("refList").innerHTML = html;
+        $("refList").dataset.loaded = "1";
+      }).catch(function () {});
+    }
+  }
 
-  function renderVarList() {
-    $("varList").innerHTML = Object.keys(PREVIEW_VARS).map(function (name) {
-      return "<span>" + escape(name) + "</span>";
+  function renderSnippets() {
+    $("snippetList").innerHTML = snippets.map(function (item, index) {
+      return '<button class="chip" data-snip="' + index + '">' +
+        escape(item.name) + "<small>" + escape(item.note) + "</small></button>";
     }).join("");
+    $("snippetList").querySelectorAll("[data-snip]").forEach(function (button) {
+      button.onclick = function () {
+        var item = snippets[+button.dataset.snip];
+        var box = $("customCss");
+        var current = box.value.replace(/\s*$/, "");
+        box.value = current ? current + "\n\n" + item.css + "\n" : item.css + "\n";
+        updateMeta(true);
+        renderPreview();
+        toast("已插入「" + item.name + "」", "ok");
+      };
+    });
   }
 
   function previewDocument(css) {
     var vars = Object.keys(PREVIEW_VARS).map(function (name) {
       return "    " + name + ":" + PREVIEW_VARS[name] + ";";
     }).join("\n");
-    // 样本结构照聊天页的类名摆：.msg-row / .bubble / .md / .composer-box。
-    // 你写 .bubble{} 这种选择器在这里能命中，换到真页面也能命中。
+    // 结构照真页面：.msg-user > .bubble，.msg-claude > .msg-avatar + .msg-body > .ai-bubble，
+    // 连发的第二条起在 .msg-layer 里。你在这儿命中的选择器，到真页面也命中。
     return [
       "<!DOCTYPE html><html><head><meta charset='utf-8'>",
       "<meta name='viewport' content='width=device-width,initial-scale=1'>",
@@ -634,38 +713,60 @@
       "  font-family:var(--font-sans);font-size:var(--text-base);",
       "  line-height:var(--leading);padding:var(--page-pad)}",
       ".stream{display:flex;flex-direction:column;gap:var(--msg-gap)}",
-      ".msg-row{display:flex;gap:8px;align-items:flex-end}",
-      ".msg-row.user{justify-content:flex-end}",
-      ".bubble{max-width:76%;padding:10px 14px;border-radius:var(--radius-bubble);",
-      "  background:var(--bg-surface);box-shadow:var(--shadow-soft)}",
-      ".msg-row.user .bubble{background:var(--bubble-user)}",
+      ".msg-user{display:flex;justify-content:flex-end}",
+      ".msg-claude{display:flex;gap:8px;align-items:flex-start}",
+      ".msg-avatar{width:32px;height:32px;border-radius:8px;flex:0 0 auto;",
+      "  background:var(--bg-sunken)}",
+      ".msg-body{min-width:0;display:flex;flex-direction:column;gap:8px}",
+      ".bubble{max-width:76%;padding:8px 14px;border-radius:var(--radius-bubble);",
+      "  background:var(--bubble-user);box-shadow:var(--shadow-soft)}",
+      ".ai-bubble{max-width:100%;padding:8px 14px;",
+      "  border-radius:var(--radius-bubble);background:var(--bg-surface);",
+      "  box-shadow:var(--shadow-soft)}",
       ".md{margin:0}",
-      ".wechat-bubble{margin-top:8px}",
+      ".thinking-summary{font-size:var(--text-sm);color:var(--text-secondary);",
+      "  margin-bottom:4px}",
+      ".tool-row{font-size:var(--text-sm);color:var(--text-secondary);",
+      "  padding:6px 10px;border:1px solid var(--border);",
+      "  border-radius:var(--radius-md);width:fit-content}",
       ".composer{margin-top:24px}",
-      ".composer-box{display:flex;align-items:center;gap:8px;padding:8px 12px;",
-      "  border:1px solid var(--border);border-radius:var(--radius-lg);",
-      "  background:var(--bg-surface)}",
+      ".composer-box{display:flex;align-items:center;gap:8px;padding:10px 16px;",
+      "  border-radius:var(--radius-bubble);background:rgba(28,28,30,.12);",
+      "  box-shadow:inset 0 0 0 1px rgba(255,255,255,.28)}",
       ".composer-input-row{flex:1;color:var(--text-faint)}",
-      ".composer-icon{width:28px;height:28px;border-radius:var(--radius-full);",
-      "  background:var(--bg-sunken);flex:0 0 auto}",
-      ".send{width:32px;height:32px;border-radius:var(--radius-full);",
-      "  background:var(--accent);color:var(--accent-fg);flex:0 0 auto;",
-      "  display:grid;place-items:center;font-size:14px}",
+      ".composer-icon{width:var(--input-btn-size);height:var(--input-btn-size);",
+      "  border-radius:var(--radius-full);background:var(--bg-sunken);flex:0 0 auto}",
+      "#send{width:var(--input-btn-size);height:var(--input-btn-size);",
+      "  border-radius:var(--radius-full);background:var(--accent);",
+      "  color:var(--accent-fg);flex:0 0 auto;display:grid;place-items:center}",
       "</style>",
-      "<style id='custom'>" + css.replace(/<\/style/gi, "<\\/style") + "</style>",
+      "<style>" + css.replace(/<\/style/gi, "<\\/style") + "</style>",
       "</head><body>",
       "<div class='stream'>",
-      "  <div class='msg-row user'><div class='bubble'><div class='md'>你在吗？</div></div></div>",
-      "  <div class='msg-row assistant'><div>",
-      "    <div class='bubble'><div class='md'>在。</div></div>",
-      "    <div class='bubble wechat-bubble'><div class='md'>刚才在看你白天写的那段。</div></div>",
-      "    <div class='bubble wechat-bubble'><div class='md'>这是连发的第三条，用来看间距和圆角。</div></div>",
-      "  </div></div>",
+      "  <div class='msg-user' data-timestamp='2026-08-25T01:55:00+08:00'>",
+      "    <div class='bubble'><div class='md'>你在吗？</div></div>",
+      "  </div>",
+      "  <div class='msg-claude' data-timestamp='2026-08-25T01:55:06+08:00'>",
+      "    <div class='msg-avatar'></div>",
+      "    <div class='msg-body'>",
+      "      <div class='ai-bubble'>",
+      "        <div class='thinking-summary'>想了想怎么说这句</div>",
+      "        <div class='md'>在。</div>",
+      "      </div>",
+      "      <div class='msg-layer'>",
+      "        <div class='ai-bubble'><div class='md'>刚才在看你白天写的那段。</div></div>",
+      "      </div>",
+      "      <div class='msg-layer'>",
+      "        <div class='ai-bubble'><div class='md'>这是连发的第三条，用来看间距和圆角。</div></div>",
+      "      </div>",
+      "      <div class='tool-row'>查了一下记忆库</div>",
+      "    </div>",
+      "  </div>",
       "</div>",
       "<div class='composer'><div class='composer-box'>",
       "  <div class='composer-icon'></div>",
       "  <div class='composer-input-row'>说点什么…</div>",
-      "  <div class='send'>↑</div>",
+      "  <div id='send'>↑</div>",
       "</div></div>",
       "</body></html>"
     ].join("\n");
@@ -673,47 +774,70 @@
 
   function renderPreview() {
     var css = $("customCss").value;
-    var frame = $("previewFrame");
-    // 用 srcdoc 而不是往里面注入：每次重建文档，不会残留上一版样式。
-    frame.srcdoc = previewDocument(css);
-    $("cssMeta").textContent = css.length + " 字符";
-    checkCss(css);
+    // srcdoc 每次重建文档，不会残留上一版样式。
+    $("previewFrame").srcdoc = previewDocument(css);
+    updateMeta(false);
   }
 
-  function checkCss(css) {
-    // 只做一个最粗的检查：花括号配不配对。浏览器对 CSS 错误很宽容，
-    // 不会报错只会默默丢掉一整段——括号不配对是最常见的那种翻车。
-    var depth = 0;
-    var problem = "";
-    var stripped = css.replace(/\/\*[\s\S]*?\*\//g, "");
-    for (var index = 0; index < stripped.length; index++) {
-      var ch = stripped[index];
-      if (ch === "{") depth++;
-      if (ch === "}") {
-        depth--;
-        if (depth < 0) { problem = "多了一个 」（第 " + (index + 1) + " 个字符附近）"; break; }
-      }
-    }
-    if (!problem && depth > 0) problem = "有 " + depth + " 个花括号没关上";
-    var slot = $("cssErr");
-    if (problem) {
-      slot.textContent = "CSS 括号对不上：" + problem + "。浏览器不会报错，只会默默丢掉一整段。";
-      slot.classList.remove("hide");
-    } else {
-      slot.classList.add("hide");
-    }
+  function updateMeta(dirty) {
+    var length = $("customCss").value.length;
+    $("cssMeta").textContent = length + " 字符" + (dirty ? "（未预览）" : "");
   }
 
+  function runCheckup() {
+    var css = $("customCss").value;
+    var button = $("checkBtn");
+    button.disabled = true;
+    api("/api/admin/css/checkup", { method: "POST", body: { css: css } })
+      .then(function (data) {
+        var slot = $("checkupResult");
+        if (data.brace_error) {
+          $("cssErr").textContent = "花括号对不上：" + data.brace_error +
+            "。浏览器不会报错，只会默默丢掉一整段。";
+          $("cssErr").classList.remove("hide");
+        } else {
+          $("cssErr").classList.add("hide");
+        }
+        if (!data.classes.length) {
+          slot.innerHTML = '<p class="muted">没检出类名选择器（可能只改了变量，那没问题）。</p>';
+          return;
+        }
+        var html = "";
+        if (data.unknown_count) {
+          html += '<p class="err-text">' + data.unknown_count +
+            " 个类名在真页面里找不到，这些规则不会生效：</p>";
+        } else {
+          html += '<p class="ok-text">' + data.classes.length + " 个类名全部存在。</p>";
+        }
+        html += "<div>";
+        data.classes.forEach(function (item) {
+          html += '<span class="name ' + (item.known ? "good" : "bad") + '">.' +
+            escape(item.name) + (item.known ? " ✓" : " ✗") + "</span>";
+        });
+        html += "</div>";
+        data.classes.forEach(function (item) {
+          if (item.suggest) {
+            html += '<p class="suggest">.' + escape(item.name) + " → 你大概是想改 " +
+              escape(item.suggest) + "</p>";
+          }
+        });
+        slot.innerHTML = html;
+      })
+      .catch(function (error) { toast(error.message, "err"); })
+      .finally(function () { button.disabled = false; });
+  }
+
+  $("checkBtn").onclick = runCheckup;
   $("previewBtn").onclick = renderPreview;
-  $("insertVars").onclick = function () {
-    var box = $("customCss");
-    box.value = box.value.trim()
-      ? box.value.replace(/\s*$/, "\n\n") + VAR_TEMPLATE
-      : VAR_TEMPLATE;
-    renderPreview();
+  $("customCss").oninput = function () { updateMeta(true); };
+
+  $("fullBtn").onclick = function () {
+    document.body.classList.add("css-full");
+    $("customCss").focus();
   };
-  $("customCss").oninput = function () {
-    $("cssMeta").textContent = this.value.length + " 字符（未预览）";
+  $("exitFullBtn").onclick = function () {
+    document.body.classList.remove("css-full");
+    renderPreview();
   };
 
   // ---------- 表单 ----------
@@ -734,10 +858,9 @@
     $("maxToolRounds").value = state.max_tool_rounds || 8;
     $("customCss").value = state.custom_css || "";
     $("cssEnabled").checked = state.custom_css_enabled !== false;
-    $("cssMeta").textContent = (state.custom_css || "").length + " 字符";
+    updateMeta(false);
     renderModels();
     renderServers();
-    renderVarList();
   }
 
   function collect() {
@@ -777,7 +900,10 @@
         state = data.settings;
         fillForm();
         renderToolStatus(data.tools);
-        toast("已保存。聊天页刷新一下看效果。", "ok");
+        var note = $("cssEnabled").checked
+          ? "已保存。聊天页刷新一下看效果。"
+          : "已保存。注意 CSS 启用开关是关着的。";
+        toast(note, "ok");
       })
       .catch(function (error) { toast(error.message, "err"); })
       .finally(function () { button.disabled = false; });
@@ -791,6 +917,7 @@
         state = data.settings;
         fillForm();
         renderToolStatus(data.tools);
+        $("refList").dataset.loaded = "";
         toast("已重读配置并重拉工具", "ok");
       })
       .catch(function (error) { toast(error.message, "err"); })

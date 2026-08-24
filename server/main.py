@@ -7,13 +7,12 @@
     uvicorn server.main:app --host 127.0.0.1 --port 8787
 
 不监听 0.0.0.0：本服务只有应用内密码一层防护，直接暴露到公网等于把
-你的 API 额度交给扇区。让 nginx 反代 127.0.0.1，并在 nginx 那一层上 HTTPS。
+你的 API 额度交给扫段的。让 nginx 反代 127.0.0.1，并在 nginx 那一层上 HTTPS。
 """
 
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import (
@@ -28,15 +27,21 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.formparsers import MultiPartParser
 
 from server import auth, clock, config, llm, profile as profile_store, store
 from server.store import ConversationNotFound
 from server.uploads import (
+    MAX_FILE_BYTES,
     remove_conversation_uploads,
     save_uploads,
     validated_attachments,
     validated_file,
 )
+
+# Starlette 默认单个 part 只收 1MB，不抬高的话超过 1MB 的附件会在
+# uploads.py 那 12MB 的检查之前就先失败，报错还很难看懂。
+MultiPartParser.max_part_size = MAX_FILE_BYTES
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("chatnest")
@@ -139,7 +144,7 @@ async def health() -> dict:
 
 @app.get("/api/models")
 async def models() -> dict:
-    """模型列表。读 server/models.json，没有就只报 .env 里配的两个。
+    """模型列表。读 server/models.json，没有就只报 .env 里配的那个。
 
     不去拉上游 /v1/models：中转站那个接口常常返回几百个型号，
     堆进前端模型选择器里没法用。想要哪几个自己写在 models.json 里。
@@ -183,7 +188,7 @@ async def splash() -> dict:
     elif 18 <= hour < 23:
         pool = ["吃了吗。", "收工了？", "晚上好。"]
     else:
-        pool = ["还没睡。", "夜深了。", "睚着呢。"]
+        pool = ["还没睡。", "夜深了。", "睁着眼呢。"]
     return {"line": secrets.choice(pool)}
 
 
@@ -518,7 +523,8 @@ async def put_diary(body: DiaryBody) -> dict:
 async def get_calendar(
     year: int | None = Query(default=None, ge=1970, le=2200),
 ) -> dict:
-    target = year or datetime.now(timezone.utc).year
+    # 按本地时区取当前年份。用 UTC 的话跨年那几个小时会翻错一年。
+    target = year or clock.now_local().year
     return profile_store.calendar_year(target)
 
 

@@ -12,6 +12,7 @@
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 from typing import Any
@@ -24,9 +25,10 @@ from fastapi import (
     Header,
     HTTPException,
     Query,
+    Request,
     UploadFile,
 )
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.formparsers import MultiPartParser
 
@@ -155,6 +157,26 @@ async def login(body: AuthBody) -> dict:
 @app.get("/health")
 async def health() -> dict:
     return {"ok": True}
+
+
+# ---------- 自定义 CSS ----------
+
+@app.get("/api/custom.css")
+async def custom_css(request: Request) -> Response:
+    """前端 head 里那个 link 指到这里。
+
+    不鉴权：`<link>` 标签带不了 Authorization 头，而且 CSS 里没有秘密。
+    带 ETag 让浏览器复用缓存，改了内容 ETag 就变，所以热更新照样即时。
+    """
+    css = settings.custom_css()
+    etag = '"%s"' % hashlib.sha256(css.encode("utf-8")).hexdigest()[:32]
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+    return Response(
+        css,
+        media_type="text/css; charset=utf-8",
+        headers={"ETag": etag, "Cache-Control": "no-cache"},
+    )
 
 
 # ---------- 控制台 ----------

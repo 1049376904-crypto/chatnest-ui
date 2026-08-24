@@ -369,6 +369,13 @@ async def chat(body: ChatBody) -> StreamingResponse:
                         "content": content,
                         "is_error": chunk.get("is_error", False),
                     })
+                elif event == "trace_summary":
+                    # 必须插在 traces 最前面：前端按 traces[0] 找 summary，
+                    # 找到才会给工具卡片配一个能点开的按钮。
+                    text = chunk.get("text") or ""
+                    if text:
+                        response_traces.insert(0, {"type": "summary", "text": text})
+                        yield sse("trace_summary", {"text": text})
                 elif event == "done":
                     assistant_message_id = store.complete_turn(
                         conv_id, response_text, response_thinking, response_traces

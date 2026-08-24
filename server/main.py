@@ -1,7 +1,8 @@
-"""ChatNest 后端。接 OpenAI 兼容的中转 API。
+"""ChatNest 后端。接 OpenAI 兼容的中转 API，工具走 MCP。
 
-接口列表对的是 README 里那张表。/api/chat 以外全部靠本地 SQLite 和 JSON，
-不过模型。
+接口分两组：
+- `/api/*` 聊天那一套，对齐上游 README 那张表
+- `/api/admin/*` 控制台用的，读写运行期配置
 
 启动：
     uvicorn server.main:app --host 127.0.0.1 --port 8787
@@ -29,7 +30,8 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.formparsers import MultiPartParser
 
-from server import auth, clock, config, llm, profile as profile_store, store
+from server import auth, clock, config, llm, profile as profile_store, settings, store
+from server.mcp_client import registry
 from server.store import ConversationNotFound
 from server.uploads import (
     MAX_FILE_BYTES,
@@ -54,6 +56,8 @@ store.initialize_store()
 chat_lock = asyncio.Lock()
 summary_lock = asyncio.Lock()
 
+TRACE_CONTENT_CHARS = 20_000
+
 
 def require_auth(authorization: str = Header(default="")) -> None:
     token = authorization.removeprefix("Bearer ").strip()
@@ -74,7 +78,7 @@ class ChatBody(BaseModel):
     session_id: str | None = Field(default=None, max_length=256)
     edit_message_id: int | None = Field(default=None, ge=1)
     retry_message_id: int | None = Field(default=None, ge=1)
-    model: str = Field(default="", max_length=128)
+    model: str = Field(default="", max_length=200)
     effort: str = Field(default="medium", max_length=16)
     extended: bool = True
     attachments: list[str] = Field(default_factory=list, max_length=10)
@@ -110,7 +114,7 @@ class ThinkingSummaryBody(BaseModel):
 
 
 class ToolCaptionBody(BaseModel):
-    tool_name: str = Field(default="", max_length=128)
+    tool_name: str = Field(default="", max_length=200)
     tool_input: Any = None
     tool_output: str = Field(default="", max_length=20_000)
 
@@ -120,9 +124,22 @@ class DiaryBody(BaseModel):
     text: str = Field(default="", max_length=20_000)
 
 
+class ProbeBody(BaseModel):
+    url: str = Field(min_length=1, max_length=500)
+    token: str = Field(default="", max_length=2000)
+    id: str = Field(default="", max_length=40)
+
+
 def sse(event: str, payload: dict[str, Any]) -> str:
     data = json.dumps(payload, ensure_ascii=False)
     return f"event: {event}\ndata: {data}\n\n"
+
+
+def trace_content(value: Any) -> str:
+    text = str(value or "")
+    if len(text) <= TRACE_CONTENT_CHARS:
+        return text
+    return text[:TRACE_CONTENT_CHARS] + "\n\n[output truncated]"
 
 
 # ---------- 登录 ----------
@@ -140,33 +157,69 @@ async def health() -> dict:
     return {"ok": True}
 
 
+# ---------- 控制台 ----------
+
+@app.get("/dashboard")
+async def dashboard() -> FileResponse:
+    """控制台页面。页面本身不鉴权，里面每个接口都鉴权。"""
+    return FileResponse(
+        config.ROOT / "dashboard.html",
+        media_type="text/html",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@app.get("/api/admin/settings", dependencies=AUTHED)
+async def admin_settings() -> dict:
+    return {"settings": settings.public_view(), "tools": registry.status()}
+
+
+@app.put("/api/admin/settings", dependencies=AUTHED)
+async def admin_settings_save(body: dict) -> dict:
+    settings.update(body)
+    # 配置一变，工具清单可能整个不一样了，重拉一次；拉不动也别让保存失败。
+    try:
+        await registry.refresh()
+    except Exception:
+        logger.exception("保存后重拉 MCP 工具失败")
+    return {"settings": settings.public_view(), "tools": registry.status()}
+
+
+@app.post("/api/admin/reload", dependencies=AUTHED)
+async def admin_reload() -> dict:
+    """热更新：重读配置文件并重拉工具，不重启进程。"""
+    settings.reload()
+    try:
+        await registry.refresh()
+    except Exception:
+        logger.exception("热更新时重拉 MCP 工具失败")
+    return {"settings": settings.public_view(), "tools": registry.status()}
+
+
+@app.post("/api/admin/mcp/refresh", dependencies=AUTHED)
+async def admin_mcp_refresh() -> dict:
+    return await registry.refresh()
+
+
+@app.post("/api/admin/mcp/probe", dependencies=AUTHED)
+async def admin_mcp_probe(body: ProbeBody) -> dict:
+    """测试单个地址。token 留空时沿用已存的那个，省得你重新贴一遍。"""
+    from server.mcp_client import probe
+
+    token = body.token
+    if not token and body.id:
+        for item in settings.mcp_servers():
+            if item["id"] == body.id:
+                token = item.get("token", "")
+                break
+    return await probe(body.url, token)
+
+
 # ---------- 模型 ----------
 
 @app.get("/api/models")
 async def models() -> dict:
-    """模型列表。读 server/models.json，没有就只报 .env 里配的那个。
-
-    不去拉上游 /v1/models：中转站那个接口常常返回几百个型号，
-    堆进前端模型选择器里没法用。想要哪几个自己写在 models.json 里。
-    """
-    path = config.ROOT / "models.json"
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(data, list) and data:
-            return {"models": data}
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        pass
-    return {
-        "models": [
-            {
-                "id": config.CHAT_MODEL,
-                "label": config.CHAT_MODEL,
-                "desc": "默认模型",
-                "thinking": "adaptive",
-                "primary": True,
-            }
-        ]
-    }
+    return {"models": settings.models()}
 
 
 @app.post("/api/warmup", dependencies=AUTHED)
@@ -227,6 +280,7 @@ async def chat(body: ChatBody) -> StreamingResponse:
         committed = False
         response_text = ""
         response_thinking = ""
+        response_traces: list[dict] = []
         try:
             if body.edit_message_id is not None:
                 prepared = store.prepare_edit_turn(
@@ -260,13 +314,13 @@ async def chat(body: ChatBody) -> StreamingResponse:
             )
 
             history = store.history_messages(
-                conv_id, user_message_id, config.HISTORY_TURNS
+                conv_id, user_message_id, settings.history_turns()
             )
             note = clock.prompt_note(
                 store.last_message_time(conv_id, user_message_id)
             )
             messages = llm.build_messages(history, _system_prompt(), note)
-            model = body.model.strip() or config.CHAT_MODEL
+            model = body.model.strip() or settings.chat_model()
 
             chunks = llm.stream_chat(
                 messages, model, body.effort, body.extended
@@ -278,6 +332,7 @@ async def chat(body: ChatBody) -> StreamingResponse:
                     break
                 except asyncio.TimeoutError:
                     # 长时间无输出时吐个注释行，防 nginx / 浏览器把连接当死连接断掉。
+                    # 工具跑得久的时候全靠这个撑着。
                     yield ": heartbeat\n\n"
                     continue
                 event = chunk["event"]
@@ -287,9 +342,36 @@ async def chat(body: ChatBody) -> StreamingResponse:
                 elif event == "thinking":
                     response_thinking += chunk.get("text", "")
                     yield sse("thinking", {"text": chunk["text"]})
+                elif event == "tool_use":
+                    # text_offset 让前端知道这张卡片该插在正文哪个位置
+                    response_traces.append({
+                        "type": "tool_use",
+                        "id": chunk.get("id"),
+                        "name": chunk.get("name"),
+                        "input": chunk.get("input"),
+                        "text_offset": len(response_text.rstrip()),
+                    })
+                    yield sse("tool_use", {
+                        "id": chunk.get("id"),
+                        "name": chunk.get("name"),
+                        "input": chunk.get("input"),
+                    })
+                elif event == "tool_result":
+                    content = trace_content(chunk.get("content"))
+                    response_traces.append({
+                        "type": "tool_result",
+                        "tool_use_id": chunk.get("tool_use_id"),
+                        "content": content,
+                        "is_error": chunk.get("is_error", False),
+                    })
+                    yield sse("tool_result", {
+                        "tool_use_id": chunk.get("tool_use_id"),
+                        "content": content,
+                        "is_error": chunk.get("is_error", False),
+                    })
                 elif event == "done":
                     assistant_message_id = store.complete_turn(
-                        conv_id, response_text, response_thinking
+                        conv_id, response_text, response_thinking, response_traces
                     )
                     committed = True
                     yield sse(

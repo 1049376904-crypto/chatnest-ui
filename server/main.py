@@ -32,7 +32,16 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.formparsers import MultiPartParser
 
-from server import auth, clock, config, llm, profile as profile_store, settings, store
+from server import (
+    auth,
+    clock,
+    config,
+    css_meta,
+    llm,
+    profile as profile_store,
+    settings,
+    store,
+)
 from server.mcp_client import registry
 from server.store import ConversationNotFound
 from server.uploads import (
@@ -132,6 +141,10 @@ class ProbeBody(BaseModel):
     id: str = Field(default="", max_length=40)
 
 
+class CssBody(BaseModel):
+    css: str = Field(default="", max_length=settings.MAX_CSS_CHARS)
+
+
 def sse(event: str, payload: dict[str, Any]) -> str:
     data = json.dumps(payload, ensure_ascii=False)
     return f"event: {event}\ndata: {data}\n\n"
@@ -211,6 +224,7 @@ async def admin_settings_save(body: dict) -> dict:
 async def admin_reload() -> dict:
     """热更新：重读配置文件并重拉工具，不重启进程。"""
     settings.reload()
+    css_meta.known_classes(refresh=True)
     try:
         await registry.refresh()
     except Exception:
@@ -235,6 +249,22 @@ async def admin_mcp_probe(body: ProbeBody) -> dict:
                 token = item.get("token", "")
                 break
     return await probe(body.url, token)
+
+
+@app.post("/api/admin/css/checkup", dependencies=AUTHED)
+async def admin_css_checkup(body: CssBody) -> dict:
+    """类名体检：每个类名在真页面里存不存在。"""
+    return css_meta.checkup(body.css)
+
+
+@app.get("/api/admin/css/reference", dependencies=AUTHED)
+async def admin_css_reference() -> dict:
+    return css_meta.reference()
+
+
+@app.get("/api/admin/css/snippets", dependencies=AUTHED)
+async def admin_css_snippets() -> dict:
+    return {"snippets": css_meta.snippets()}
 
 
 # ---------- 模型 ----------

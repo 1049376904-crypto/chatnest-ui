@@ -7,14 +7,17 @@
 风险太大；而且你以后从上游拉新版本之后，重跑一次就行。
 
 补丁一：启动时恢复上次的会话。
-localStorage 里一直存着 chat_conversation（前端自己写的），但没人读。
-给 resetEmpty 包一层：首次进页面时如果存着 conv_id 就直接打开它，
-后续主动新建会话照旧行为。
+启动那一句长这样（约 5044 行）：
+
+    if(state.token)showChat();else loadMsgAvatars();resetEmpty();loadModels();…
+
+`resetEmpty()` 头一件事就是 removeItem('chat_conversation')，所以在它
+之后做任何补救都来不及——conv_id 已经没了。这里把那一句替换成先查
+localStorage：有 conv_id 就 openSession(它)，没有才 resetEmpty()。
 
 补丁二：历史里的工具卡片别默默隐藏。
-源码 2621 行建完卡片就 display='none'，而能展开它的那个按钮只在
-有 summary 条目时才创建——两个条件一错开，卡片就在 DOM 里永远打不开。
-这里把那一句隐藏去掉。（后端也补上了 summary，两道保险。）
+源码建完卡片就 display='none'，而能展开它的按钮只在 traces 里有
+summary 条目时才创建——两个条件一错开，卡片就在 DOM 里永远打不开。
 """
 
 import re
@@ -24,43 +27,48 @@ from pathlib import Path
 
 MARK = "/*chatnest-patched*/"
 
-BOOTSTRAP = """
-<script>%s
-// 启动时恢复上次的会话。只管首次进页面这一下，
-// 之后你主动点「新对话」依旧得到空白会话。
-(function () {
-  "use strict";
-  var done = false;
-  function boot() {
-    if (done) return;
-    done = true;
-    var id = null;
-    try { id = localStorage.getItem("chat_conversation"); } catch (e) { return; }
-    if (!id) return;
-    if (typeof openSession !== "function") return;
-    // 标题这一刷先留空，openSession 会自己拉回真正的标题。
-    try { openSession({ conv_id: id, title: "" }); } catch (e) {}
-  }
-  // resetEmpty 是启动流程里最后一步，包住它比猜启动时机可靠。
-  var timer = setInterval(function () {
-    if (typeof resetEmpty !== "function" || typeof openSession !== "function") return;
-    clearInterval(timer);
-    var original = resetEmpty;
-    window.resetEmpty = resetEmpty = function () {
-      var result = original.apply(this, arguments);
-      if (!done) {
-        // 等 resetEmpty 把空白页画完再接上历史，否则会被它覆盖。
-        Promise.resolve(result).then(boot, boot);
-      }
-      return result;
-    };
-    // 若 resetEmpty 已经跑过了（补丁插得比启动流程晚），就自己补一次。
-    setTimeout(function () { if (!document.getElementById("empty")) return; boot(); }, 1200);
-  }, 60);
-  setTimeout(function () { clearInterval(timer); }, 20000);
-})();
-</script>
-""" % MARK
+# 启动那一句的原文。整句替换，不做正则拼接——这一句里有分号有函数调用，
+# 正则改写太容易改出语法错。
+BOOT_NEEDLE = (
+    "if(state.token)showChat();else loadMsgAvatars();"
+    "resetEmpty();loadModels();updateSessionHeader();updateSendButton();"
+)
+
+BOOT_REPLACEMENT = (
+    "if(state.token)showChat();else loadMsgAvatars();"
+    "(function(){" + MARK + "\n"
+    "// 有上次的会话就接着上次那个，没有才开空白。\n"
+    "// 注意 resetEmpty() 会清掉 chat_conversation，所以必须先读再决定。\n"
+    "var id=null;try{id=localStorage.getItem('chat_conversation')}catch(e){}\n"
+    "if(id&&state.token){\n"
+    "  // 标题先留空，openSession 会自己拉回真正的标题。\n"
+    "  Promise.resolve().then(function(){return openSession({conv_id:id,title:''})})\n"
+    "    .catch(function(){return resetEmpty()});\n"
+    "}else{resetEmpty()}\n"
+    "})();loadModels();updateSessionHeader();updateSendButton();"
+)
+
+# 上一版补丁：整段 script 插在 </body> 之前。认出来就撤掉。
+OLD_PATCH_RE = re.compile(
+    r"\n<script>/\*chatnest-patched\*/.*?</script>\n",
+    re.DOTALL,
+)
+
+
+def strip_old(text: str) -> tuple[str, str]:
+    """撤掉上一版那段无效补丁。"""
+    cleaned, count = OLD_PATCH_RE.subn("", text)
+    if count:
+        return cleaned, f"旧补丁：已撤掉 {count} 段"
+    return text, ""
+
+
+def patch_boot(text: str) -> tuple[str, str]:
+    if MARK in text:
+        return text, "会话恢复：已打过，跳过"
+    if BOOT_NEEDLE not in text:
+        return text, "会话恢复：没找到启动那一句（上游可能改过），未改"
+    return text.replace(BOOT_NEEDLE, BOOT_REPLACEMENT, 1), "会话恢复：已改启动逻辑"
 
 
 def patch_traces(text: str) -> tuple[str, str]:
@@ -80,16 +88,6 @@ def patch_traces(text: str) -> tuple[str, str]:
     return text.replace(needle, replacement, 1), "工具卡片：已取消隐藏"
 
 
-def patch_bootstrap(text: str) -> tuple[str, str]:
-    if MARK in text:
-        return text, "会话恢复：已打过，跳过"
-    match = re.search(r"</body\s*>", text, re.IGNORECASE)
-    if not match:
-        return text, "会话恢复：没找到 </body>，未改"
-    index = match.start()
-    return text[:index] + BOOTSTRAP + text[index:], "会话恢复：已插入"
-
-
 def main() -> int:
     if len(sys.argv) < 2:
         print(__doc__)
@@ -105,13 +103,19 @@ def main() -> int:
         shutil.copy2(path, backup)
         print(f"备份：{backup}")
 
-    text, note1 = patch_traces(text)
-    text, note2 = patch_bootstrap(text)
-    path.write_text(text, encoding="utf-8")
+    notes = []
+    text, note = strip_old(text)
+    if note:
+        notes.append(note)
+    text, note = patch_traces(text)
+    notes.append(note)
+    text, note = patch_boot(text)
+    notes.append(note)
 
-    print(note1)
-    print(note2)
-    print("完了。手机上硬刷新一下页面（或者换个无痕模式标签页）。")
+    path.write_text(text, encoding="utf-8")
+    for line in notes:
+        print(line)
+    print("完了。手机上硬刷新一下页面（或者换个无痕标签页）。")
     return 0
 
 

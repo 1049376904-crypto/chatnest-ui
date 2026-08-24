@@ -1,11 +1,11 @@
-"""OpenAI 兼容的 chat completions 客户端。
+"""OpenAI 兼容的 chat completions 客户端，带工具调用循环。
 
 中转站的字段各家不一样，所以 delta 里思考链那个 key 列了四种常见写法
 （reasoning_content / reasoning / thinking / thought），命中哪个算哪个。
 对方不吐思考链也无妨，前端那一栏不出现而已。
 
-工具调用（tool_use / tool_result 事件）这边不接——中转 API 背后没有
-执行环境，没东西可调。前端那两个事件分支就永远不会触发。
+工具调用走 MCP：`tools` 字段带上工具清单，模型说要调哪个，
+这边去 MCP server 执行，把结果拼回 messages 再问一遍，直到它不再要工具。
 """
 
 import json
@@ -15,10 +15,11 @@ from typing import Any, AsyncIterator
 
 import httpx
 
-from server import config
+from server import settings
+from server.mcp_client import registry
 from server.uploads import IMAGE_EXTENSIONS, TEXT_EXTENSIONS, as_data_url, inline_text
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("chatnest.llm")
 
 THINKING_KEYS = ("reasoning_content", "reasoning", "thinking", "thought")
 
@@ -36,8 +37,9 @@ class UpstreamError(RuntimeError):
 
 def _headers() -> dict[str, str]:
     headers = {"Content-Type": "application/json"}
-    if config.OPENAI_API_KEY:
-        headers["Authorization"] = f"Bearer {config.OPENAI_API_KEY}"
+    key = settings.api_key()
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
     return headers
 
 
@@ -81,7 +83,7 @@ def build_messages(
     """库里的历史 → chat completions 的 messages。
 
     时钟那一行拼在最后一条用户消息尾巴上，而不是 system 里——
-    放 system 里会被中转站的 prompt 缓存镀住，模型就永远停在首次那个时间。
+    放 system 里会被中转站的 prompt 缓存锁住，模型就永远停在首次那个时间。
     """
     messages: list[dict[str, Any]] = []
     if system:
@@ -128,9 +130,9 @@ def _error_message(status: int, body: str) -> str:
     except (json.JSONDecodeError, TypeError):
         detail = body[:200]
     if status == 401:
-        return "中转 API 报 401：检查 OPENAI_API_KEY。"
+        return "中转 API 报 401：检查 API key。"
     if status == 404:
-        return f"中转 API 报 404：检查 OPENAI_BASE_URL 和模型名。{detail}".strip()
+        return f"中转 API 报 404：检查 base URL 和模型名。{detail}".strip()
     if status == 429:
         return "中转 API 报 429：额度或频率限制，稍后再试。"
     if status >= 500:
@@ -138,31 +140,86 @@ def _error_message(status: int, body: str) -> str:
     return f"中转 API 报错（{status}）：{detail or '无详细信息'}"
 
 
-async def stream_chat(
+class _ToolCallAccumulator:
+    """流式模式下 tool_calls 是分片来的，得按 index 攒起来。
+
+    上游一般这么发：第一片给 index / id / function.name，后面若干片
+    只给 function.arguments 的一小段字符串，要自己拼成完整 JSON。
+    不累积的话拿到的是 `{"que` 这种半截东西。
+    """
+
+    def __init__(self) -> None:
+        self._slots: dict[int, dict[str, Any]] = {}
+
+    def feed(self, deltas: list[dict[str, Any]]) -> None:
+        for item in deltas:
+            if not isinstance(item, dict):
+                continue
+            index = item.get("index")
+            index = int(index) if isinstance(index, int) else len(self._slots)
+            slot = self._slots.setdefault(
+                index, {"id": "", "name": "", "arguments": ""}
+            )
+            if item.get("id"):
+                slot["id"] = str(item["id"])
+            function = item.get("function") or {}
+            if isinstance(function, dict):
+                if function.get("name"):
+                    slot["name"] = str(function["name"])
+                chunk = function.get("arguments")
+                if isinstance(chunk, str):
+                    slot["arguments"] += chunk
+
+    def finish(self) -> list[dict[str, Any]]:
+        out = []
+        for index in sorted(self._slots):
+            slot = self._slots[index]
+            if not slot["name"]:
+                continue
+            out.append({
+                "id": slot["id"] or f"call_{index}",
+                "name": slot["name"],
+                "arguments": slot["arguments"],
+            })
+        return out
+
+
+async def _stream_once(
     messages: list[dict[str, Any]],
     model: str,
-    effort: str = "medium",
-    extended: bool = True,
+    effort: str,
+    extended: bool,
+    tools: list[dict[str, Any]],
 ) -> AsyncIterator[dict[str, Any]]:
-    """流式拉回复。产出 {'event': 'thinking'|'delta'|'done'} 三种。
-
-    不在这里写库也不在这里拼 SSE，那是 main.py 的事。
-    """
+    """打一次上游。产出 thinking / delta，最后一帧是 round_done。"""
     payload: dict[str, Any] = {
         "model": model,
         "messages": messages,
         "stream": True,
-        "max_tokens": config.MAX_TOKENS,
+        "max_tokens": settings.max_tokens(),
     }
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
     if extended:
-        level = EFFORT_MAP.get(effort, "medium")
-        payload["reasoning_effort"] = level
-        budget = THINKING_BUDGET.get(effort)
-        if budget:
-            payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
+        payload["reasoning_effort"] = EFFORT_MAP.get(effort, "medium")
+        # 思考预算和 tools 一起送，有些中转站会 400；带工具时就不发这一项。
+        if not tools:
+            budget = THINKING_BUDGET.get(effort)
+            if budget:
+                payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
 
-    url = f"{config.OPENAI_BASE_URL}/chat/completions"
-    timeout = httpx.Timeout(config.REQUEST_TIMEOUT, connect=20.0)
+    url = f"{settings.base_url()}/chat/completions"
+    timeout = httpx.Timeout(settings.request_timeout(), connect=20.0)
+    if settings.debug_log():
+        logger.info(
+            "upstream request model=%s messages=%d tools=%d\n%s",
+            model, len(messages), len(tools),
+            json.dumps(payload, ensure_ascii=False)[:4000],
+        )
+
+    accumulator = _ToolCallAccumulator()
+    text_buffer = ""
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream(
@@ -172,8 +229,7 @@ async def stream_chat(
                     body = (await response.aread()).decode(errors="replace")
                     logger.error(
                         "upstream error status=%s body=%s",
-                        response.status_code,
-                        body[:500],
+                        response.status_code, body[:1000],
                     )
                     raise UpstreamError(_error_message(response.status_code, body))
                 async for line in response.aiter_lines():
@@ -193,8 +249,12 @@ async def stream_chat(
                     thinking = _delta_thinking(delta)
                     if thinking:
                         yield {"event": "thinking", "text": thinking}
+                    tool_deltas = delta.get("tool_calls")
+                    if isinstance(tool_deltas, list):
+                        accumulator.feed(tool_deltas)
                     text = delta.get("content")
                     if isinstance(text, str) and text:
+                        text_buffer += text
                         yield {"event": "delta", "text": text}
                     elif isinstance(text, list):
                         # 少数中转站把 content 包成 parts 数组
@@ -202,11 +262,130 @@ async def stream_chat(
                             if isinstance(part, dict) and part.get("type") == "text":
                                 piece = part.get("text") or ""
                                 if piece:
+                                    text_buffer += piece
                                     yield {"event": "delta", "text": piece}
     except httpx.TimeoutException as exc:
         raise UpstreamError("中转 API 超时了，稍后再试。") from exc
     except httpx.HTTPError as exc:
         raise UpstreamError(f"连不上中转 API：{exc}") from exc
+
+    yield {
+        "event": "round_done",
+        "tool_calls": accumulator.finish(),
+        "text": text_buffer,
+    }
+
+
+async def stream_chat(
+    messages: list[dict[str, Any]],
+    model: str,
+    effort: str = "medium",
+    extended: bool = True,
+) -> AsyncIterator[dict[str, Any]]:
+    """流式拉回复，需要工具就自己调完再接着说。
+
+    产出 thinking / delta / tool_use / tool_result / done。
+    不在这里写库也不在这里拼 SSE，那是 main.py 的事。
+    """
+    tools: list[dict[str, Any]] = []
+    if settings.tools_enabled():
+        try:
+            await registry.ensure_loaded()
+            tools = registry.tool_schemas()
+        except Exception:
+            logger.exception("加载 MCP 工具失败，这轮不带工具")
+            tools = []
+
+    working = list(messages)
+    max_rounds = settings.max_tool_rounds()
+    hit_limit = True
+
+    for _ in range(max_rounds):
+        pending: list[dict[str, Any]] = []
+        assistant_text = ""
+        async for chunk in _stream_once(working, model, effort, extended, tools):
+            if chunk["event"] == "round_done":
+                pending = chunk["tool_calls"]
+                assistant_text = chunk["text"]
+                continue
+            yield chunk
+
+        if not pending:
+            hit_limit = False
+            break
+
+        # 把模型这一轮的发言（含工具调用意图）记进对话，
+        # 否则下一轮它不知道自己刚才说要调工具。
+        working.append({
+            "role": "assistant",
+            "content": assistant_text or None,
+            "tool_calls": [
+                {
+                    "id": call["id"],
+                    "type": "function",
+                    "function": {
+                        "name": call["name"],
+                        "arguments": call["arguments"] or "{}",
+                    },
+                }
+                for call in pending
+            ],
+        })
+
+        for call in pending:
+            raw_args = call["arguments"] or "{}"
+            try:
+                arguments = json.loads(raw_args) if raw_args.strip() else {}
+                if not isinstance(arguments, dict):
+                    arguments = {"value": arguments}
+                parse_error = ""
+            except json.JSONDecodeError as exc:
+                arguments = {}
+                parse_error = f"参数不是合法 JSON：{exc}。原文：{raw_args[:500]}"
+
+            yield {
+                "event": "tool_use",
+                "id": call["id"],
+                "name": call["name"],
+                "input": raw_args if parse_error else arguments,
+            }
+
+            if parse_error:
+                # 不抛错，把问题喂回去让模型自己改——比整轮失败友好得多。
+                output, is_error = parse_error, True
+            else:
+                if settings.debug_log():
+                    logger.info(
+                        "tool call %s args=%s",
+                        call["name"],
+                        json.dumps(arguments, ensure_ascii=False)[:2000],
+                    )
+                output, is_error = await registry.call(call["name"], arguments)
+                if settings.debug_log():
+                    logger.info(
+                        "tool result %s error=%s len=%d\n%s",
+                        call["name"], is_error, len(output), output[:2000],
+                    )
+
+            yield {
+                "event": "tool_result",
+                "tool_use_id": call["id"],
+                "content": output,
+                "is_error": is_error,
+            }
+            working.append({
+                "role": "tool",
+                "tool_call_id": call["id"],
+                "content": output,
+            })
+
+    if hit_limit:
+        logger.warning("工具调用达到 %d 轮上限，停下了", max_rounds)
+        yield {
+            "event": "delta",
+            "text": f"\n\n[连续调用工具 {max_rounds} 轮仍未结束，已停止]",
+        }
+
     yield {"event": "done"}
 
 
@@ -217,12 +396,12 @@ async def complete(
 ) -> str:
     """非流式一句话。给两条摘要接口用，默认走便宜模型。"""
     payload = {
-        "model": model or config.SUMMARY_MODEL,
+        "model": model or settings.summary_model(),
         "messages": messages,
         "max_tokens": max_tokens,
         "stream": False,
     }
-    url = f"{config.OPENAI_BASE_URL}/chat/completions"
+    url = f"{settings.base_url()}/chat/completions"
     timeout = httpx.Timeout(60.0, connect=20.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(url, headers=_headers(), json=payload)
@@ -297,6 +476,6 @@ async def generate_memory_summary(transcript: str) -> str:
             },
             {"role": "user", "content": transcript[:40_000]},
         ],
-        model=config.CHAT_MODEL,
+        model=settings.chat_model(),
         max_tokens=1200,
     )

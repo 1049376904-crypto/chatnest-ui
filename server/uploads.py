@@ -47,11 +47,11 @@ def _safe_name(filename: str) -> str:
 
 
 def _safe_conv_dir(conv_id: str) -> Path:
-    # conv_id 是自己生的 uuid，但它从请求体里来，不能当安全值用。
-        target = (UPLOAD_ROOT / Path(conv_id).name).resolve()
-        if not _inside(target, UPLOAD_ROOT):
-            raise HTTPException(status_code=400, detail="无效会话路径")
-        return target
+    """conv_id 是自己生的 uuid，但它从请求体里来，不能当安全值用。"""
+    target = (UPLOAD_ROOT / Path(conv_id).name).resolve()
+    if not _inside(target, UPLOAD_ROOT):
+        raise HTTPException(status_code=400, detail="无效会话路径")
+    return target
 
 
 def attachment_metadata(path: Path) -> dict:

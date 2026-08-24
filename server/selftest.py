@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""不联网的自检。跑存储层、去重、时钟、messages 组装和路由鉴权。
+"""不联网的自检。跑存储层、去重、时钟、配置、工具名洗洗、路由鉴权。
 
     python3 -m server.selftest
 
-它不碰中转 API，不花额度。数据写在临时目录，跑完就删。
-部署完先跑这个，能把「代码有问题」和「API key 不对」分开。
+它不碰中转 API、不碰 MCP server，不花额度。数据写在临时目录，跑完就删。
+部署完先跑这个，能把「代码有问题」和「API key / MCP 地址不对」分开。
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -14,13 +15,15 @@ import tempfile
 _TMP = tempfile.mkdtemp(prefix="chatnest-selftest-")
 # setdefault + load_dotenv 的顺序有讲究：dotenv 默认不覆盖已存在的环境变量，
 # 所以这里先占位，就算你的 server/.env 里写了真实密码也不会影响自检。
+# DATA_DIR 必须硬赋值（不能 setdefault），不然会写到你真正的数据目录里。
 os.environ.setdefault("CHAT_PASSWORD", "selftest")
 os.environ.setdefault("CHAT_SECRET", "selftest-secret")
 os.environ["DATA_DIR"] = _TMP
 os.environ.setdefault("APP_TIMEZONE", "Asia/Shanghai")
 
-from server import auth, clock, llm, profile as profile_store, store  # noqa: E402
+from server import auth, clock, llm, profile as profile_store, settings, store  # noqa: E402
 from server.dedupe import is_near_duplicate  # noqa: E402
+from server.mcp_client import ToolRegistry, _parse_body, _slug  # noqa: E402
 
 failures: list[str] = []
 
@@ -31,6 +34,14 @@ def check(name: str, condition: object, detail: str = "") -> None:
     print(f"{mark}  {name}" + (f"  ← {detail}" if detail and not ok else ""))
     if not ok:
         failures.append(name)
+
+
+class FakeResponse:
+    """冒充 httpx.Response，只为了验 _parse_body 能不能同时吃 JSON 和 SSE。"""
+
+    def __init__(self, text: str, content_type: str) -> None:
+        self.text = text
+        self.headers = {"content-type": content_type}
 
 
 def main() -> int:
@@ -63,6 +74,32 @@ def main() -> int:
             for key in ("id", "role", "text", "thinking", "attachments", "traces")
         ),
     )
+
+    # traces 落库与读回——工具卡片刷新后能不能恢复全靠这一条。
+    # 字段名必须跟前端 _buildTraceRowFromHistory 对得上：
+    # summary 用 text，tool_use 用 id/name/input，tool_result 用 tool_use_id/content。
+    traces_conv, _ = store.begin_turn("带工具的一轮")
+    store.complete_turn(
+        traces_conv, "查完了。", "",
+        [
+            {"type": "summary", "text": "查了一下记忆库"},
+            {"type": "tool_use", "id": "call_1", "name": "latent_search",
+             "input": {"q": "柳州"}, "text_offset": 0},
+            {"type": "tool_result", "tool_use_id": "call_1",
+             "content": "找到三条", "is_error": False},
+        ],
+    )
+    reloaded = store.conversation_messages(traces_conv)["messages"][-1]
+    check("traces 落库后读得回", len(reloaded["traces"]) == 3, str(reloaded["traces"]))
+    check("summary 在第一位", reloaded["traces"][0]["type"] == "summary")
+    check("summary 用 text 字段", reloaded["traces"][0].get("text") == "查了一下记忆库")
+    check("tool_use 带 id/name",
+          reloaded["traces"][1].get("id") == "call_1"
+          and reloaded["traces"][1].get("name") == "latent_search")
+    check("tool_result 按 tool_use_id 配对",
+          reloaded["traces"][2].get("tool_use_id") == "call_1")
+    check("input 保持字典", isinstance(reloaded["traces"][1].get("input"), dict))
+    store.delete_conversation(traces_conv)
 
     # 分页：再塞几轮，然后只拿 2 条
     for index in range(3):
@@ -223,6 +260,84 @@ def main() -> int:
     profile_store.write_avatars({"me": {"url": "/a.png"}, "ai": {"url": "/b.png"}})
     check("头像存取", profile_store.read_avatars()["ai"]["url"] == "/b.png")
 
+    # ---- 运行期配置 ----
+    check("默认开工具", settings.tools_enabled() is True)
+    check("默认关详细日志", settings.debug_log() is False)
+    check("没配模型也至少报一个", len(settings.models()) >= 1)
+
+    settings.update({
+        "chat_model": "test-model",
+        "max_tokens": 1234,
+        "openai_api_key": "sk-selftest-abcdefghijklmnop",
+        "mcp_servers": [
+            {"id": "s1", "name": "测试", "url": "http://127.0.0.1:1/mcp",
+             "token": "tok-secret-value", "enabled": True},
+        ],
+    })
+    check("改完即生效", settings.chat_model() == "test-model")
+    check("数字项生效", settings.max_tokens() == 1234)
+    check("key 存得进", settings.api_key() == "sk-selftest-abcdefghijklmnop")
+
+    view = settings.public_view()
+    check("对外不露完整 key",
+          "abcdefghijklmnop" not in json.dumps(view, ensure_ascii=False),
+          str(view.get("openai_api_key_masked")))
+    check("key 打码带省略号", "\u2026" in view["openai_api_key_masked"])
+    check("对外不露 MCP token",
+          "tok-secret-value" not in json.dumps(view, ensure_ascii=False))
+    check("但告诉你存了 token", view["mcp_servers"][0]["has_token"] is True)
+
+    # 界面传回打码值时不能把真 key 覆盖成垃圾
+    settings.update({"openai_api_key": view["openai_api_key_masked"]})
+    check("打码值不会覆盖真 key",
+          settings.api_key() == "sk-selftest-abcdefghijklmnop", settings.api_key())
+    # 不传 mcp_servers 时旧的不能消失
+    check("没传的键不动", len(settings.mcp_servers()) == 1)
+    # 传了服务列表但 token 留空时沿用旧 token
+    settings.update({"mcp_servers": [
+        {"id": "s1", "name": "测试", "url": "http://127.0.0.1:1/mcp",
+         "token": "", "enabled": True},
+    ]})
+    check("token 留空则沿用旧的",
+          settings.mcp_servers()[0]["token"] == "tok-secret-value")
+
+    settings.update({"openai_api_key": "__clear__", "chat_model": "", "max_tokens": 0})
+    check("__clear__ 能清空 key", not settings.current()["openai_api_key"])
+    check("留空回退到 .env", settings.max_tokens() > 0)
+
+    check("base_url 不带尾斜杠", not settings.base_url().endswith("/"))
+    check(
+        "base_url 不带 /chat/completions",
+        not settings.base_url().endswith("/chat/completions"),
+        settings.base_url(),
+    )
+    check("工具轮数有上限", settings.max_tool_rounds() <= 30)
+
+    # ---- 工具名洗洗 ----
+    # OpenAI 只收 ^[a-zA-Z0-9_-]{1,64}$，中文、点、斜杠都过不去。
+    check("中文名被洗掉", _slug("搜索记忆") == "mcp", _slug("搜索记忆"))
+    check("点和斜杠变下划线", _slug("latent.search/v2") == "latent_search_v2")
+    check("合法名原样保留", _slug("latent_search") == "latent_search")
+    check("不会超 64 字", len(_slug("x" * 200)) <= 64)
+
+    # ---- MCP 响应解析（不联网）----
+    plain = _parse_body(FakeResponse('{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}',
+                                     "application/json"))
+    check("能解 JSON 响应", plain.get("result") == {"tools": []})
+    sse_body = (
+        "event: message\n"
+        'data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"a"}]}}\n\n'
+    )
+    parsed = _parse_body(FakeResponse(sse_body, "text/event-stream"))
+    check("能解 SSE 响应",
+          parsed.get("result", {}).get("tools") == [{"name": "a"}], str(parsed))
+
+    registry = ToolRegistry()
+    check("没拉过工具时 schemas 为空", registry.tool_schemas() == [])
+    check("status 字段齐",
+          {"loaded", "tool_count", "tools", "by_server", "errors"}
+          <= set(registry.status()))
+
     # ---- 时钟 ----
     line = clock.clock_line()
     check("时钟带时区", "Asia/Shanghai" in line, line)
@@ -261,6 +376,31 @@ def main() -> int:
         [{"role": "user", "text": "", "attachments": []}], "", ""
     )) == 0)
 
+    # ---- 流式 tool_calls 分片累积 ----
+    # 上游就是这么发的：name 只在第一片，arguments 一小段一小段拼。
+    accumulator = llm._ToolCallAccumulator()
+    accumulator.feed([{"index": 0, "id": "call_x",
+                       "function": {"name": "latent_search", "arguments": ""}}])
+    accumulator.feed([{"index": 0, "function": {"arguments": '{"que'}}])
+    accumulator.feed([{"index": 0, "function": {"arguments": 'ry":"柳州"}'}}])
+    calls = accumulator.finish()
+    check("分片拼成一个调用", len(calls) == 1, str(calls))
+    check("name 拼对", calls and calls[0]["name"] == "latent_search")
+    check("arguments 拼成完整 JSON",
+          calls and json.loads(calls[0]["arguments"]) == {"query": "柳州"},
+          calls[0]["arguments"] if calls else "")
+
+    multi = llm._ToolCallAccumulator()
+    multi.feed([
+        {"index": 0, "id": "a", "function": {"name": "one", "arguments": "{}"}},
+        {"index": 1, "id": "b", "function": {"name": "two", "arguments": "{}"}},
+    ])
+    check("多个并行调用不混", [c["name"] for c in multi.finish()] == ["one", "two"])
+
+    nameless = llm._ToolCallAccumulator()
+    nameless.feed([{"index": 0, "function": {"arguments": "{}"}}])
+    check("没名字的丢掉", nameless.finish() == [])
+
     # ---- 路由鉴权 ----
     from fastapi.routing import APIRoute
 
@@ -287,18 +427,15 @@ def main() -> int:
         "/api/diary", "/api/calendar", "/api/calendar/{date}",
         "/api/upload", "/api/avatars", "/api/thinking-summary",
         "/api/tool-caption", "/api/splash", "/api/warmup",
+        "/api/admin/settings", "/api/admin/reload",
+        "/api/admin/mcp/refresh", "/api/admin/mcp/probe",
     }
-    check("README 那张表的接口都在", expected <= paths, str(sorted(expected - paths)))
+    check("接口都在", expected <= paths, str(sorted(expected - paths)))
 
-    # ---- 配置规范化 ----
-    from server.config import OPENAI_BASE_URL
+    # 控制台页面得真的存在，不然 /dashboard 会 500
+    from server.config import ROOT
 
-    check("base_url 不带尾斜杠", not OPENAI_BASE_URL.endswith("/"), OPENAI_BASE_URL)
-    check(
-        "base_url 不带 /chat/completions",
-        not OPENAI_BASE_URL.endswith("/chat/completions"),
-        OPENAI_BASE_URL,
-    )
+    check("dashboard.html 在位", (ROOT / "dashboard.html").is_file())
 
     print()
     if failures:
@@ -306,7 +443,7 @@ def main() -> int:
         for name in failures:
             print(f"  - {name}")
         return 1
-    print("全部通过。接下来填 .env 里的 OPENAI_BASE_URL 和 OPENAI_API_KEY。")
+    print("全部通过。")
     return 0
 
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""给 index.html 打两个补丁。幂等，重复跑不会重复改。
+"""给 index.html 打三个补丁。幂等，重复跑不会重复改。
 
     python3 server/patch_frontend.py /var/www/chatnest-ui/index.html
 
@@ -7,17 +7,17 @@
 风险太大；而且你以后从上游拉新版本之后，重跑一次就行。
 
 补丁一：启动时恢复上次的会话。
-启动那一句长这样（约 5044 行）：
-
-    if(state.token)showChat();else loadMsgAvatars();resetEmpty();loadModels();…
-
-`resetEmpty()` 头一件事就是 removeItem('chat_conversation')，所以在它
-之后做任何补救都来不及——conv_id 已经没了。这里把那一句替换成先查
-localStorage：有 conv_id 就 openSession(它)，没有才 resetEmpty()。
+启动那一句里 `resetEmpty()` 头一件事就是 removeItem('chat_conversation')，
+所以在它之后做任何补救都来不及——conv_id 已经没了。这里把那一句换成
+先查 localStorage：有 conv_id 就 openSession(它)，没有才 resetEmpty()。
 
 补丁二：历史里的工具卡片别默默隐藏。
 源码建完卡片就 display='none'，而能展开它的按钮只在 traces 里有
 summary 条目时才创建——两个条件一错开，卡片就在 DOM 里永远打不开。
+
+补丁三：接上自定义 CSS。
+在 </head> 前插一行 `<link href="/api/custom.css">`。CSS 正文存在控制台，
+改完刷新页面即生效，index.html 不再动。
 """
 
 import re
@@ -26,6 +26,7 @@ import sys
 from pathlib import Path
 
 MARK = "/*chatnest-patched*/"
+CSS_MARK = "chatnest-custom-css"
 
 # 启动那一句的原文。整句替换，不做正则拼接——这一句里有分号有函数调用，
 # 正则改写太容易改出语法错。
@@ -48,7 +49,14 @@ BOOT_REPLACEMENT = (
     "})();loadModels();updateSessionHeader();updateSendButton();"
 )
 
-# 上一版补丁：整段 script 插在 </body> 之前。认出来就撤掉。
+# 带上时间戳查询串会阻止缓存，但那样每次都重拉；这里靠后端发
+# Cache-Control: no-cache，浏览器会带 ETag 来问，没改就 304。
+CSS_LINK = (
+    '<link rel="stylesheet" href="/api/custom.css" '
+    f'data-{CSS_MARK}="1">\n'
+)
+
+# 上一版补丁：整段 script 插在 </body> 之前。认出来就撕掉。
 OLD_PATCH_RE = re.compile(
     r"\n<script>/\*chatnest-patched\*/.*?</script>\n",
     re.DOTALL,
@@ -56,10 +64,10 @@ OLD_PATCH_RE = re.compile(
 
 
 def strip_old(text: str) -> tuple[str, str]:
-    """撤掉上一版那段无效补丁。"""
+    """撕掉上一版那段无效补丁。"""
     cleaned, count = OLD_PATCH_RE.subn("", text)
     if count:
-        return cleaned, f"旧补丁：已撤掉 {count} 段"
+        return cleaned, f"旧补丁：已撕掉 {count} 段"
     return text, ""
 
 
@@ -88,6 +96,17 @@ def patch_traces(text: str) -> tuple[str, str]:
     return text.replace(needle, replacement, 1), "工具卡片：已取消隐藏"
 
 
+def patch_css_link(text: str) -> tuple[str, str]:
+    """在 </head> 前插自定义 CSS 的 link。必须是最后一行，不然盖不住前面的规则。"""
+    if CSS_MARK in text:
+        return text, "自定义 CSS：已打过，跳过"
+    match = re.search(r"</head\s*>", text, re.IGNORECASE)
+    if not match:
+        return text, "自定义 CSS：没找到 </head>，未改"
+    index = match.start()
+    return text[:index] + CSS_LINK + text[index:], "自定义 CSS：已接上"
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         print(__doc__)
@@ -107,15 +126,14 @@ def main() -> int:
     text, note = strip_old(text)
     if note:
         notes.append(note)
-    text, note = patch_traces(text)
-    notes.append(note)
-    text, note = patch_boot(text)
-    notes.append(note)
+    for patcher in (patch_traces, patch_boot, patch_css_link):
+        text, note = patcher(text)
+        notes.append(note)
 
     path.write_text(text, encoding="utf-8")
     for line in notes:
         print(line)
-    print("完了。手机上硬刷新一下页面（或者换个无痕标签页）。")
+    print("完了。手机上硬刷新一下页面（或者换个无痕模式标签页）。")
     return 0
 
 

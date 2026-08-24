@@ -2,7 +2,7 @@
 
 为什么分两层：`.env` 是开机就得有的东西（密码、签名密钥），
 改它必然要重启；`data/settings.json` 是随时想改的东西（模型、MCP、
-轮数），改完重读一下就生效。
+轮数、自定义 CSS），改完重读一下就生效。
 
 settings.json 里留空的项会回退到 .env，所以你现有的 .env 继续有效，
 不需要先把它搬干净。
@@ -29,6 +29,9 @@ _TEXT_KEYS = ("openai_base_url", "openai_api_key", "chat_model", "summary_model"
 _INT_KEYS = ("max_tokens", "history_turns", "request_timeout", "max_tool_rounds")
 _BOOL_KEYS = ("tools_enabled", "debug_log")
 
+# 自定义 CSS 单独处理：不修剪空白、限长得多。
+MAX_CSS_CHARS = 200_000
+
 
 def _blank() -> dict[str, Any]:
     return {
@@ -44,6 +47,8 @@ def _blank() -> dict[str, Any]:
         "debug_log": False,
         "models": [],
         "mcp_servers": [],
+        "custom_css": "",
+        "custom_css_enabled": True,
     }
 
 
@@ -67,6 +72,7 @@ def _read_file() -> dict[str, Any]:
     merged.update({key: value for key, value in data.items() if key in merged})
     merged["models"] = _clean_models(merged.get("models"))
     merged["mcp_servers"] = _clean_servers(merged.get("mcp_servers"))
+    merged["custom_css"] = str(merged.get("custom_css") or "")[:MAX_CSS_CHARS]
     if not merged["models"]:
         merged["models"] = _legacy_models()
     return merged
@@ -203,6 +209,14 @@ def debug_log() -> bool:
     return bool(current().get("debug_log", False))
 
 
+def custom_css() -> str:
+    """关掉开关时返回空串，但正文还存着——方便你一键关掉看原样。"""
+    data = current()
+    if not data.get("custom_css_enabled", True):
+        return ""
+    return str(data.get("custom_css") or "")
+
+
 def models() -> list[dict[str, Any]]:
     listed = current().get("models") or []
     if listed:
@@ -233,7 +247,7 @@ def mask_key(value: str) -> str:
         return ""
     if len(value) <= 12:
         return "*" * len(value)
-    return f"{value[:6]}…{value[-4:]}"
+    return f"{value[:6]}\u2026{value[-4:]}"
 
 
 def public_view() -> dict[str, Any]:
@@ -269,6 +283,8 @@ def public_view() -> dict[str, Any]:
         "debug_log": debug_log(),
         "models": models(),
         "mcp_servers": servers,
+        "custom_css": str(data.get("custom_css") or ""),
+        "custom_css_enabled": bool(data.get("custom_css_enabled", True)),
     }
 
 
@@ -301,6 +317,11 @@ def update(patch: dict[str, Any]) -> dict[str, Any]:
         for key in _BOOL_KEYS:
             if key in patch:
                 data[key] = bool(patch[key])
+        if "custom_css" in patch:
+            # 不做 strip：CSS 里的缩进和换行得原样留着。
+            data["custom_css"] = str(patch["custom_css"] or "")[:MAX_CSS_CHARS]
+        if "custom_css_enabled" in patch:
+            data["custom_css_enabled"] = bool(patch["custom_css_enabled"])
         if "models" in patch:
             data["models"] = _clean_models(patch["models"])
         if "mcp_servers" in patch:

@@ -1,0 +1,971 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ChatNest 控制台</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1e222b;
+    --line: #2a2f3a;
+    --text: #e6e8ec;
+    --dim: #9aa2b1;
+    --accent: #5b8cff;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --err: #f85149;
+  }
+  * { box-sizing: border-box; }
+  html, body { overscroll-behavior-y: none; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    padding: 0 0 64px;
+    -webkit-text-size-adjust: 100%;
+  }
+  header {
+    position: sticky; top: 0; z-index: 20;
+    background: rgba(15,17,21,.94);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--line);
+    padding: 12px 16px;
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .grow { flex: 1; }
+  nav {
+    display: flex; gap: 4px; overflow-x: auto;
+    padding: 8px 16px 0; max-width: 900px; margin: 0 auto;
+    scrollbar-width: none;
+  }
+  nav::-webkit-scrollbar { display: none; }
+  nav button {
+    flex: 0 0 auto; border: 1px solid transparent; background: transparent;
+    color: var(--dim); padding: 7px 13px; border-radius: 8px;
+    font: inherit; font-size: 14px; cursor: pointer; white-space: nowrap;
+  }
+  nav button.on { color: var(--text); background: var(--panel-2); border-color: var(--line); }
+  main { max-width: 900px; margin: 0 auto; padding: 12px 16px; }
+  section {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  h2 { font-size: 15px; margin: 0 0 4px; font-weight: 600; }
+  .hint { color: var(--dim); font-size: 13px; margin: 0 0 12px; }
+  label { display: block; font-size: 13px; color: var(--dim); margin: 12px 0 5px; }
+  input[type=text], input[type=password], input[type=number], select, textarea {
+    width: 100%;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 9px 11px;
+    font: inherit;
+    font-size: 14px;
+  }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+  input::placeholder, textarea::placeholder { color: #5a6272; }
+  button {
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 8px 14px;
+    font: inherit; font-size: 14px;
+    cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--err); }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+  .row > * { flex: 1; min-width: 110px; }
+  .row > .fixed { flex: 0 0 auto; min-width: 0; }
+  .card {
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 12px;
+    margin-bottom: 10px;
+  }
+  .card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+  .card-head strong { font-size: 14px; }
+  .card-head .grow { flex: 1; }
+  code {
+    background: #10131a; padding: 1px 6px; border-radius: 4px;
+    font-size: 12.5px; color: #a9b4c8;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    word-break: break-all;
+  }
+  .tag {
+    font-size: 11.5px; padding: 2px 7px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--dim);
+  }
+  .tag.on { color: var(--ok); border-color: rgba(63,185,80,.4); }
+  .tools { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .tools span {
+    font-size: 12px; background: #10131a; color: #a9b4c8;
+    padding: 2px 8px; border-radius: 5px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .switch { display: flex; align-items: flex-start; gap: 9px; margin: 12px 0; }
+  .switch input { width: 17px; height: 17px; accent-color: var(--accent); margin-top: 3px; flex: 0 0 auto; }
+  .switch span { font-size: 14px; }
+  .switch small { display: block; color: var(--dim); font-size: 12.5px; }
+  #toast {
+    position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+    background: #232833; border: 1px solid var(--line);
+    padding: 10px 18px; border-radius: 9px; font-size: 14px;
+    opacity: 0; pointer-events: none; transition: opacity .2s;
+    max-width: 90vw; z-index: 100;
+  }
+  #toast.show { opacity: 1; }
+  #toast.err { border-color: var(--err); color: #ffb4b0; }
+  #toast.ok { border-color: rgba(63,185,80,.5); }
+  #login { max-width: 340px; margin: 15vh auto; padding: 0 16px; }
+  .hide { display: none !important; }
+  .muted { color: var(--dim); font-size: 13px; }
+  .err-text { color: var(--err); font-size: 13px; margin-top: 6px; word-break: break-all; }
+  .ok-text { color: var(--ok); font-size: 13px; margin-top: 6px; }
+  .sep { height: 1px; background: var(--line); margin: 14px 0; border: 0; }
+
+  /* ---- CSS 编辑器 ---- */
+  .editor-wrap { position: relative; }
+  #customCss {
+    /* 16px 是硬要求：iOS 上小于 16px 的输入框聚焦时会自动放大整页，
+       那就是你说的「画面移来移去」。 */
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 16px; line-height: 1.55;
+    height: 300px; resize: none;
+    white-space: pre; overflow-wrap: normal; overflow-x: auto;
+    tab-size: 2;
+  }
+  body.css-full { overflow: hidden; }
+  body.css-full .editor-wrap {
+    position: fixed; inset: 0; z-index: 60;
+    background: var(--bg); padding: 8px;
+    display: flex; flex-direction: column;
+  }
+  body.css-full #customCss {
+    flex: 1; height: auto; border-radius: 10px;
+  }
+  .editor-bar {
+    display: flex; gap: 8px; align-items: center;
+    padding: 6px 0; flex-wrap: wrap;
+  }
+  .editor-bar .grow { flex: 1; }
+  body:not(.css-full) .editor-bar .only-full { display: none; }
+  body.css-full .editor-bar .only-mini { display: none; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    font-size: 13px; padding: 6px 10px; border-radius: 999px;
+    border: 1px solid var(--line); background: var(--panel-2);
+    color: var(--text); cursor: pointer;
+  }
+  .chip small { display: block; color: var(--dim); font-size: 11px; }
+
+  .checkup { margin-top: 10px; }
+  .checkup .name {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 12.5px; padding: 3px 9px; border-radius: 6px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: #10131a; margin: 0 6px 6px 0;
+  }
+  .checkup .name.bad { color: #ffb4b0; box-shadow: inset 0 0 0 1px rgba(248,81,73,.45); }
+  .checkup .name.good { color: #9fd6a6; }
+  .suggest { font-size: 12.5px; color: var(--warn); margin: 4px 0 0; }
+
+  #previewFrame {
+    width: 100%; height: 460px; border: 1px solid var(--line);
+    border-radius: 10px; background: #F8F8F6; display: block;
+  }
+</style>
+</head>
+<body>
+
+<div id="login">
+  <section>
+    <h2>ChatNest 控制台</h2>
+    <p class="hint">用聊天页面那个密码登录。</p>
+    <input type="password" id="password" placeholder="密码" autocomplete="current-password">
+    <div style="margin-top:12px">
+      <button class="primary" id="loginBtn" style="width:100%">登录</button>
+    </div>
+    <div class="err-text hide" id="loginErr"></div>
+  </section>
+</div>
+
+<div id="app" class="hide">
+  <header>
+    <h1>ChatNest</h1>
+    <div class="grow"></div>
+    <button id="reloadBtn">热更新</button>
+    <button class="primary" id="saveBtn">保存</button>
+  </header>
+
+  <nav>
+    <button data-tab="models" class="on">模型</button>
+    <button data-tab="mcp">MCP</button>
+    <button data-tab="api">接口</button>
+    <button data-tab="css">外观</button>
+    <button data-tab="flags">开关</button>
+  </nav>
+
+  <main>
+    <div data-panel="models">
+      <section>
+        <h2>模型清单</h2>
+        <p class="hint">聊天页那个模型菜单里显示的就是这些。ID 要跟中转站的名字一字不差。</p>
+        <div id="modelList"></div>
+        <button id="addModel">＋ 加一个模型</button>
+      </section>
+    </div>
+
+    <div data-panel="mcp" class="hide">
+      <section>
+        <h2>MCP 服务</h2>
+        <p class="hint">
+          地址写到 <code>/mcp</code> 为止。工具清单是连上去实时拉的，不用手填。
+          改完先「保存」再点「重新拉取工具」。
+        </p>
+        <div id="serverList"></div>
+        <button id="addServer">＋ 加一个 MCP 服务</button>
+        <hr class="sep">
+        <div class="row">
+          <button class="fixed" id="refreshTools">重新拉取工具</button>
+          <div class="muted" id="toolStatus">尚未拉取</div>
+        </div>
+        <div id="toolDetail"></div>
+      </section>
+    </div>
+
+    <div data-panel="api" class="hide">
+      <section>
+        <h2>模型接口</h2>
+        <p class="hint">留空则用 <code>server/.env</code> 里的值。</p>
+        <label>Base URL <span class="muted" id="baseEff"></span></label>
+        <input type="text" id="baseUrl" placeholder="https://你的中转站/v1">
+        <label>API Key <span class="muted" id="keyEff"></span></label>
+        <input type="password" id="apiKey" placeholder="不改就留空" autocomplete="off">
+        <div class="row">
+          <div>
+            <label>主聊天模型</label>
+            <input type="text" id="chatModel" placeholder="默认用 .env 里的">
+          </div>
+          <div>
+            <label>摘要模型（便宜那档）</label>
+            <input type="text" id="summaryModel" placeholder="默认用 .env 里的">
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>单次最大 token</label>
+            <input type="number" id="maxTokens" min="0" placeholder="0 = 用 .env">
+          </div>
+          <div>
+            <label>历史条数</label>
+            <input type="number" id="historyTurns" min="0" placeholder="0 = 用 .env">
+          </div>
+          <div>
+            <label>超时（秒）</label>
+            <input type="number" id="requestTimeout" min="0" placeholder="0 = 用 .env">
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div data-panel="css" class="hide">
+      <section>
+        <h2>片段库</h2>
+        <p class="hint">点一下插到编辑框末尾。类名都核对过，直接能用。</p>
+        <div class="chips" id="snippetList"></div>
+      </section>
+
+      <section>
+        <h2>自定义 CSS</h2>
+        <p class="hint">
+          接在聊天页 <code>&lt;/head&gt;</code> 最后，所以能盖住原有规则。保存后聊天页刷新即生效。
+        </p>
+        <div class="switch">
+          <input type="checkbox" id="cssEnabled">
+          <span>启用
+            <small>关掉只是不下发，正文还存着——方便一键回到原样对比。</small>
+          </span>
+        </div>
+
+        <div class="editor-wrap" id="editorWrap">
+          <div class="editor-bar">
+            <button class="fixed only-mini" id="fullBtn">全屏编辑</button>
+            <button class="fixed only-full" id="exitFullBtn">退出全屏</button>
+            <button class="fixed" id="checkBtn">体检</button>
+            <button class="fixed" id="previewBtn">预览</button>
+            <div class="grow"></div>
+            <div class="muted" id="cssMeta"></div>
+          </div>
+          <textarea id="customCss" spellcheck="false" autocapitalize="off"
+            autocorrect="off" placeholder="从上面片段库挑一个，或者把找到的 CSS 贴进来。"></textarea>
+        </div>
+
+        <div class="err-text hide" id="cssErr"></div>
+        <div class="checkup" id="checkupResult"></div>
+      </section>
+
+      <section>
+        <h2>预览</h2>
+        <p class="hint">
+          按聊天页真实结构搭的样本：<code>.msg-user</code> / <code>.msg-claude</code> /
+          <code>.bubble</code> / <code>.ai-bubble</code> / <code>.msg-layer</code>。
+          侧栏、日记那些不在样本里，改它们得开聊天页看。
+        </p>
+        <iframe id="previewFrame" title="预览"></iframe>
+      </section>
+
+      <section>
+        <h2>关键类名</h2>
+        <p class="hint">写选择器时对着这张表。带 ✓ 的是在你这份前端里确认存在的。</p>
+        <div id="refList"></div>
+      </section>
+    </div>
+
+    <div data-panel="flags" class="hide">
+      <section>
+        <h2>开关</h2>
+        <div class="switch">
+          <input type="checkbox" id="toolsEnabled">
+          <span>开启工具调用
+            <small>关掉之后模型拿不到工具清单，只能纯聊天。</small>
+          </span>
+        </div>
+        <div class="switch">
+          <input type="checkbox" id="debugLog">
+          <span>详细日志
+            <small>把发给模型的完整请求（含系统提示词和聊天历史）、工具参数和返回写进系统日志。排错时开，完事关掉。</small>
+          </span>
+        </div>
+        <label>工具调用最多连续几轮</label>
+        <input type="number" id="maxToolRounds" min="1" max="30">
+      </section>
+    </div>
+  </main>
+</div>
+
+<div id="toast"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  var KEY = "chatnest_token";
+  var token = localStorage.getItem(KEY) || "";
+  var state = null;
+  var snippets = [];
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  function toast(message, kind) {
+    var el = $("toast");
+    el.textContent = message;
+    el.className = "show " + (kind || "");
+    clearTimeout(el._timer);
+    el._timer = setTimeout(function () { el.className = ""; }, 3200);
+  }
+
+  function api(path, options) {
+    options = options || {};
+    var headers = options.headers || {};
+    headers["Authorization"] = "Bearer " + token;
+    if (options.body) headers["Content-Type"] = "application/json";
+    return fetch(path, {
+      method: options.method || "GET",
+      headers: headers,
+      body: options.body ? JSON.stringify(options.body) : undefined
+    }).then(function (response) {
+      if (response.status === 401) {
+        localStorage.removeItem(KEY);
+        location.reload();
+        throw new Error("登录已过期");
+      }
+      return response.json().then(function (data) {
+        if (!response.ok) {
+          throw new Error((data && data.detail) || ("HTTP " + response.status));
+        }
+        return data;
+      });
+    });
+  }
+
+  function escape(value) {
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
+  // ---------- 登录 ----------
+
+  function login() {
+    var value = $("password").value;
+    if (!value) return;
+    $("loginBtn").disabled = true;
+    fetch("/api/auth", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: value })
+    }).then(function (response) {
+      if (!response.ok) throw new Error("密码不对");
+      return response.json();
+    }).then(function (data) {
+      token = data.token;
+      localStorage.setItem(KEY, token);
+      start();
+    }).catch(function (error) {
+      $("loginErr").textContent = error.message;
+      $("loginErr").classList.remove("hide");
+    }).finally(function () {
+      $("loginBtn").disabled = false;
+    });
+  }
+
+  $("loginBtn").onclick = login;
+  $("password").onkeydown = function (event) {
+    if (event.key === "Enter") login();
+  };
+
+  // ---------- 分页 ----------
+
+  document.querySelectorAll("nav button").forEach(function (button) {
+    button.onclick = function () {
+      document.querySelectorAll("nav button").forEach(function (other) {
+        other.classList.toggle("on", other === button);
+      });
+      var name = button.dataset.tab;
+      document.querySelectorAll("[data-panel]").forEach(function (panel) {
+        panel.classList.toggle("hide", panel.dataset.panel !== name);
+      });
+      if (name === "css") {
+        loadCssExtras();
+        renderPreview();
+      }
+    };
+  });
+
+  // ---------- 模型 ----------
+
+  function renderModels() {
+    var host = $("modelList");
+    host.innerHTML = "";
+    if (!state.models.length) {
+      host.innerHTML = '<p class="muted">一个都没有。聊天页只会显示 .env 里那个默认模型。</p>';
+    }
+    state.models.forEach(function (model, index) {
+      var card = document.createElement("div");
+      card.className = "card";
+      card.innerHTML =
+        '<div class="card-head">' +
+          "<strong>" + escape(model.label || model.id || "未命名") + "</strong>" +
+          '<div class="grow"></div>' +
+          '<button class="danger" data-del="' + index + '">删除</button>' +
+        "</div>" +
+        "<label>模型 ID（中转站的真名）</label>" +
+        '<input type="text" data-f="id" data-i="' + index + '" value="' + escape(model.id) + '">' +
+        '<div class="row">' +
+          "<div><label>显示名</label>" +
+            '<input type="text" data-f="label" data-i="' + index + '" value="' + escape(model.label) + '"></div>' +
+          "<div><label>一句说明</label>" +
+            '<input type="text" data-f="desc" data-i="' + index + '" value="' + escape(model.desc) + '"></div>' +
+        "</div>" +
+        '<div class="row">' +
+          "<div><label>思考档位</label>" +
+            '<select data-f="thinking" data-i="' + index + '">' +
+              ["none", "adaptive", "extended"].map(function (option) {
+                return '<option value="' + option + '"' +
+                  (model.thinking === option ? " selected" : "") + ">" + option + "</option>";
+              }).join("") +
+            "</select></div>" +
+          "<div><label>主列表显示</label>" +
+            '<select data-f="primary" data-i="' + index + '">' +
+              '<option value="1"' + (model.primary ? " selected" : "") + ">是</option>" +
+              '<option value="0"' + (!model.primary ? " selected" : "") + ">折叠</option>" +
+            "</select></div>" +
+        "</div>";
+      host.appendChild(card);
+    });
+
+    host.querySelectorAll("[data-del]").forEach(function (button) {
+      button.onclick = function () {
+        state.models.splice(+button.dataset.del, 1);
+        renderModels();
+      };
+    });
+    host.querySelectorAll("[data-f]").forEach(function (input) {
+      input.oninput = input.onchange = function () {
+        var model = state.models[+input.dataset.i];
+        var field = input.dataset.f;
+        if (field === "primary") model.primary = input.value === "1";
+        else model[field] = input.value;
+      };
+    });
+  }
+
+  // ---------- MCP ----------
+
+  function renderServers() {
+    var host = $("serverList");
+    host.innerHTML = "";
+    if (!state.mcp_servers.length) {
+      host.innerHTML = '<p class="muted">还没有 MCP 服务。</p>';
+    }
+    state.mcp_servers.forEach(function (server, index) {
+      var card = document.createElement("div");
+      card.className = "card";
+      var tokenNote = server.has_token
+        ? "已存 " + escape(server.token_masked) + "，不改就留空"
+        : "未设置";
+      card.innerHTML =
+        '<div class="card-head">' +
+          "<strong>" + escape(server.name || "未命名") + "</strong>" +
+          '<span class="tag ' + (server.enabled ? 'on">已启用' : '">已停用') + "</span>" +
+          '<div class="grow"></div>' +
+          '<button data-test="' + index + '">测试</button>' +
+          '<button class="danger" data-del="' + index + '">删除</button>' +
+        "</div>" +
+        '<div class="row">' +
+          "<div><label>名字</label>" +
+            '<input type="text" data-f="name" data-i="' + index + '" value="' + escape(server.name) + '"></div>' +
+          '<div class="fixed"><label>启用</label>' +
+            '<select data-f="enabled" data-i="' + index + '">' +
+              '<option value="1"' + (server.enabled ? " selected" : "") + ">是</option>" +
+              '<option value="0"' + (!server.enabled ? " selected" : "") + ">否</option>" +
+            "</select></div>" +
+        "</div>" +
+        "<label>地址</label>" +
+        '<input type="text" data-f="url" data-i="' + index + '" value="' + escape(server.url) + '" placeholder="http://172.17.0.1:8765/mcp">' +
+        '<label>Token <span class="muted">（' + tokenNote + "）</span></label>" +
+        '<input type="password" data-f="token" data-i="' + index + '" value="" placeholder="Bearer token" autocomplete="off">' +
+        '<div data-probe="' + index + '"></div>';
+      host.appendChild(card);
+    });
+
+    host.querySelectorAll("[data-del]").forEach(function (button) {
+      button.onclick = function () {
+        state.mcp_servers.splice(+button.dataset.del, 1);
+        renderServers();
+      };
+    });
+    host.querySelectorAll("[data-f]").forEach(function (input) {
+      input.oninput = input.onchange = function () {
+        var server = state.mcp_servers[+input.dataset.i];
+        var field = input.dataset.f;
+        if (field === "enabled") {
+          server.enabled = input.value === "1";
+          renderServers();
+        } else {
+          server[field] = input.value;
+        }
+      };
+    });
+    host.querySelectorAll("[data-test]").forEach(function (button) {
+      button.onclick = function () {
+        var index = +button.dataset.test;
+        var server = state.mcp_servers[index];
+        var slot = host.querySelector('[data-probe="' + index + '"]');
+        button.disabled = true;
+        slot.innerHTML = '<p class="muted">正在连…</p>';
+        api("/api/admin/mcp/probe", {
+          method: "POST",
+          body: { url: server.url, token: server.token || "", id: server.id }
+        }).then(function (data) {
+          if (!data.ok) {
+            slot.innerHTML = '<p class="err-text">' + escape(data.error) + "</p>";
+            return;
+          }
+          slot.innerHTML =
+            '<p class="ok-text">连上了，' + data.tools.length + " 个工具：</p>" +
+            '<div class="tools">' +
+            data.tools.map(function (tool) {
+              return '<span title="' + escape(tool.description) + '">' + escape(tool.name) + "</span>";
+            }).join("") + "</div>";
+        }).catch(function (error) {
+          slot.innerHTML = '<p class="err-text">' + escape(error.message) + "</p>";
+        }).finally(function () {
+          button.disabled = false;
+        });
+      };
+    });
+  }
+
+  function renderToolStatus(status) {
+    if (!status) return;
+    var parts = [status.tool_count + " 个工具"];
+    var names = Object.keys(status.by_server || {});
+    if (names.length) parts.push(names.length + " 个服务");
+    if ((status.errors || []).length) parts.push(status.errors.length + " 个失败");
+    $("toolStatus").textContent = status.loaded ? parts.join(" · ") : "尚未拉取";
+
+    var html = "";
+    (status.errors || []).forEach(function (item) {
+      html += '<p class="err-text">' + escape(item.server) + "：" + escape(item.error) + "</p>";
+    });
+    Object.keys(status.by_server || {}).forEach(function (name) {
+      var tools = status.by_server[name] || [];
+      html += '<div style="margin-top:10px"><div class="muted">' + escape(name) +
+        "（" + tools.length + "）</div><div class=\"tools\">" +
+        tools.map(function (tool) { return "<span>" + escape(tool) + "</span>"; }).join("") +
+        "</div></div>";
+    });
+    $("toolDetail").innerHTML = html;
+  }
+
+  // ---------- 外观 ----------
+
+  // 亮色主题变量，取自 index.html。预览用。
+  var PREVIEW_VARS = {
+    "--bg-primary": "#F8F8F6",
+    "--bg-surface": "#F6F6F4",
+    "--bubble-user": "#EEEEEC",
+    "--bg-sunken": "#E6E6E4",
+    "--text-primary": "#1F1E1D",
+    "--text-secondary": "#6E6D66",
+    "--text-faint": "#A6A39A",
+    "--accent": "#DA7756",
+    "--accent-fg": "#FFF",
+    "--border": "rgba(31,30,29,.10)",
+    "--font-serif": "ui-serif,Georgia,'PingFang SC',sans-serif",
+    "--font-sans": "-apple-system,system-ui,'PingFang SC',sans-serif",
+    "--text-base": "16px",
+    "--text-read": "16px",
+    "--text-sm": "13px",
+    "--leading": "1.65",
+    "--radius-bubble": "22px",
+    "--radius-md": "12px",
+    "--radius-full": "999px",
+    "--msg-gap": "28px",
+    "--page-pad": "16px",
+    "--input-btn-size": "36px",
+    "--shadow-soft": "0 1px 3px rgba(31,30,29,.05)"
+  };
+
+  function loadCssExtras() {
+    if (!snippets.length) {
+      api("/api/admin/css/snippets").then(function (data) {
+        snippets = data.snippets || [];
+        renderSnippets();
+      }).catch(function () {});
+    }
+    if (!$("refList").dataset.loaded) {
+      api("/api/admin/css/reference").then(function (data) {
+        var html = (data.key_classes || []).map(function (item) {
+          return '<div style="margin:5px 0"><code>' + escape(item.selector) + "</code> " +
+            (item.exists ? '<span class="tag on">✓</span>' : '<span class="tag">?</span>') +
+            ' <span class="muted">' + escape(item.note) + "</span></div>";
+        }).join("");
+        if (data.source) {
+          html += '<p class="hint" style="margin-top:10px">读的是 <code>' +
+            escape(data.source) + "</code></p>";
+        } else {
+          html += '<p class="err-text">找不到 index.html，体检和这张表都不准。' +
+            "可以用环境变量 FRONTEND_HTML 指定路径。</p>";
+        }
+        $("refList").innerHTML = html;
+        $("refList").dataset.loaded = "1";
+      }).catch(function () {});
+    }
+  }
+
+  function renderSnippets() {
+    $("snippetList").innerHTML = snippets.map(function (item, index) {
+      return '<button class="chip" data-snip="' + index + '">' +
+        escape(item.name) + "<small>" + escape(item.note) + "</small></button>";
+    }).join("");
+    $("snippetList").querySelectorAll("[data-snip]").forEach(function (button) {
+      button.onclick = function () {
+        var item = snippets[+button.dataset.snip];
+        var box = $("customCss");
+        var current = box.value.replace(/\s*$/, "");
+        box.value = current ? current + "\n\n" + item.css + "\n" : item.css + "\n";
+        updateMeta(true);
+        renderPreview();
+        toast("已插入「" + item.name + "」", "ok");
+      };
+    });
+  }
+
+  function previewDocument(css) {
+    var vars = Object.keys(PREVIEW_VARS).map(function (name) {
+      return "    " + name + ":" + PREVIEW_VARS[name] + ";";
+    }).join("\n");
+    // 结构照真页面：.msg-user > .bubble，.msg-claude > .msg-avatar + .msg-body > .ai-bubble，
+    // 连发的第二条起在 .msg-layer 里。你在这儿命中的选择器，到真页面也命中。
+    return [
+      "<!DOCTYPE html><html><head><meta charset='utf-8'>",
+      "<meta name='viewport' content='width=device-width,initial-scale=1'>",
+      "<style>",
+      ":root{\n" + vars + "\n}",
+      "*{box-sizing:border-box}",
+      "body{margin:0;background:var(--bg-primary);color:var(--text-primary);",
+      "  font-family:var(--font-sans);font-size:var(--text-base);",
+      "  line-height:var(--leading);padding:var(--page-pad)}",
+      ".stream{display:flex;flex-direction:column;gap:var(--msg-gap)}",
+      ".msg-user{display:flex;justify-content:flex-end}",
+      ".msg-claude{display:flex;gap:8px;align-items:flex-start}",
+      ".msg-avatar{width:32px;height:32px;border-radius:8px;flex:0 0 auto;",
+      "  background:var(--bg-sunken)}",
+      ".msg-body{min-width:0;display:flex;flex-direction:column;gap:8px}",
+      ".bubble{max-width:76%;padding:8px 14px;border-radius:var(--radius-bubble);",
+      "  background:var(--bubble-user);box-shadow:var(--shadow-soft)}",
+      ".ai-bubble{max-width:100%;padding:8px 14px;",
+      "  border-radius:var(--radius-bubble);background:var(--bg-surface);",
+      "  box-shadow:var(--shadow-soft)}",
+      ".md{margin:0}",
+      ".thinking-summary{font-size:var(--text-sm);color:var(--text-secondary);",
+      "  margin-bottom:4px}",
+      ".tool-row{font-size:var(--text-sm);color:var(--text-secondary);",
+      "  padding:6px 10px;border:1px solid var(--border);",
+      "  border-radius:var(--radius-md);width:fit-content}",
+      ".composer{margin-top:24px}",
+      ".composer-box{display:flex;align-items:center;gap:8px;padding:10px 16px;",
+      "  border-radius:var(--radius-bubble);background:rgba(28,28,30,.12);",
+      "  box-shadow:inset 0 0 0 1px rgba(255,255,255,.28)}",
+      ".composer-input-row{flex:1;color:var(--text-faint)}",
+      ".composer-icon{width:var(--input-btn-size);height:var(--input-btn-size);",
+      "  border-radius:var(--radius-full);background:var(--bg-sunken);flex:0 0 auto}",
+      "#send{width:var(--input-btn-size);height:var(--input-btn-size);",
+      "  border-radius:var(--radius-full);background:var(--accent);",
+      "  color:var(--accent-fg);flex:0 0 auto;display:grid;place-items:center}",
+      "</style>",
+      "<style>" + css.replace(/<\/style/gi, "<\\/style") + "</style>",
+      "</head><body>",
+      "<div class='stream'>",
+      "  <div class='msg-user' data-timestamp='2026-08-25T01:55:00+08:00'>",
+      "    <div class='bubble'><div class='md'>你在吗？</div></div>",
+      "  </div>",
+      "  <div class='msg-claude' data-timestamp='2026-08-25T01:55:06+08:00'>",
+      "    <div class='msg-avatar'></div>",
+      "    <div class='msg-body'>",
+      "      <div class='ai-bubble'>",
+      "        <div class='thinking-summary'>想了想怎么说这句</div>",
+      "        <div class='md'>在。</div>",
+      "      </div>",
+      "      <div class='msg-layer'>",
+      "        <div class='ai-bubble'><div class='md'>刚才在看你白天写的那段。</div></div>",
+      "      </div>",
+      "      <div class='msg-layer'>",
+      "        <div class='ai-bubble'><div class='md'>这是连发的第三条，用来看间距和圆角。</div></div>",
+      "      </div>",
+      "      <div class='tool-row'>查了一下记忆库</div>",
+      "    </div>",
+      "  </div>",
+      "</div>",
+      "<div class='composer'><div class='composer-box'>",
+      "  <div class='composer-icon'></div>",
+      "  <div class='composer-input-row'>说点什么…</div>",
+      "  <div id='send'>↑</div>",
+      "</div></div>",
+      "</body></html>"
+    ].join("\n");
+  }
+
+  function renderPreview() {
+    var css = $("customCss").value;
+    // srcdoc 每次重建文档，不会残留上一版样式。
+    $("previewFrame").srcdoc = previewDocument(css);
+    updateMeta(false);
+  }
+
+  function updateMeta(dirty) {
+    var length = $("customCss").value.length;
+    $("cssMeta").textContent = length + " 字符" + (dirty ? "（未预览）" : "");
+  }
+
+  function runCheckup() {
+    var css = $("customCss").value;
+    var button = $("checkBtn");
+    button.disabled = true;
+    api("/api/admin/css/checkup", { method: "POST", body: { css: css } })
+      .then(function (data) {
+        var slot = $("checkupResult");
+        if (data.brace_error) {
+          $("cssErr").textContent = "花括号对不上：" + data.brace_error +
+            "。浏览器不会报错，只会默默丢掉一整段。";
+          $("cssErr").classList.remove("hide");
+        } else {
+          $("cssErr").classList.add("hide");
+        }
+        if (!data.classes.length) {
+          slot.innerHTML = '<p class="muted">没检出类名选择器（可能只改了变量，那没问题）。</p>';
+          return;
+        }
+        var html = "";
+        if (data.unknown_count) {
+          html += '<p class="err-text">' + data.unknown_count +
+            " 个类名在真页面里找不到，这些规则不会生效：</p>";
+        } else {
+          html += '<p class="ok-text">' + data.classes.length + " 个类名全部存在。</p>";
+        }
+        html += "<div>";
+        data.classes.forEach(function (item) {
+          html += '<span class="name ' + (item.known ? "good" : "bad") + '">.' +
+            escape(item.name) + (item.known ? " ✓" : " ✗") + "</span>";
+        });
+        html += "</div>";
+        data.classes.forEach(function (item) {
+          if (item.suggest) {
+            html += '<p class="suggest">.' + escape(item.name) + " → 你大概是想改 " +
+              escape(item.suggest) + "</p>";
+          }
+        });
+        slot.innerHTML = html;
+      })
+      .catch(function (error) { toast(error.message, "err"); })
+      .finally(function () { button.disabled = false; });
+  }
+
+  $("checkBtn").onclick = runCheckup;
+  $("previewBtn").onclick = renderPreview;
+  $("customCss").oninput = function () { updateMeta(true); };
+
+  $("fullBtn").onclick = function () {
+    document.body.classList.add("css-full");
+    $("customCss").focus();
+  };
+  $("exitFullBtn").onclick = function () {
+    document.body.classList.remove("css-full");
+    renderPreview();
+  };
+
+  // ---------- 表单 ----------
+
+  function fillForm() {
+    $("baseUrl").value = state.openai_base_url || "";
+    $("baseEff").textContent = "（生效：" + state.openai_base_url_effective + "）";
+    $("apiKey").value = "";
+    $("keyEff").textContent = "（当前：" + (state.openai_api_key_masked || "未设置") +
+      (state.openai_api_key_from_env ? "，来自 .env" : "") + "）";
+    $("chatModel").value = state.chat_model || "";
+    $("summaryModel").value = state.summary_model || "";
+    $("maxTokens").value = state.max_tokens || "";
+    $("historyTurns").value = state.history_turns || "";
+    $("requestTimeout").value = state.request_timeout || "";
+    $("toolsEnabled").checked = !!state.tools_enabled;
+    $("debugLog").checked = !!state.debug_log;
+    $("maxToolRounds").value = state.max_tool_rounds || 8;
+    $("customCss").value = state.custom_css || "";
+    $("cssEnabled").checked = state.custom_css_enabled !== false;
+    updateMeta(false);
+    renderModels();
+    renderServers();
+  }
+
+  function collect() {
+    var payload = {
+      openai_base_url: $("baseUrl").value.trim(),
+      chat_model: $("chatModel").value.trim(),
+      summary_model: $("summaryModel").value.trim(),
+      max_tokens: +$("maxTokens").value || 0,
+      history_turns: +$("historyTurns").value || 0,
+      request_timeout: +$("requestTimeout").value || 0,
+      max_tool_rounds: +$("maxToolRounds").value || 8,
+      tools_enabled: $("toolsEnabled").checked,
+      debug_log: $("debugLog").checked,
+      custom_css: $("customCss").value,
+      custom_css_enabled: $("cssEnabled").checked,
+      models: state.models,
+      mcp_servers: state.mcp_servers.map(function (server) {
+        return {
+          id: server.id,
+          name: server.name,
+          url: server.url,
+          token: server.token || "",
+          enabled: server.enabled
+        };
+      })
+    };
+    var key = $("apiKey").value.trim();
+    if (key) payload.openai_api_key = key;
+    return payload;
+  }
+
+  $("saveBtn").onclick = function () {
+    var button = $("saveBtn");
+    button.disabled = true;
+    api("/api/admin/settings", { method: "PUT", body: collect() })
+      .then(function (data) {
+        state = data.settings;
+        fillForm();
+        renderToolStatus(data.tools);
+        var note = $("cssEnabled").checked
+          ? "已保存。聊天页刷新一下看效果。"
+          : "已保存。注意 CSS 启用开关是关着的。";
+        toast(note, "ok");
+      })
+      .catch(function (error) { toast(error.message, "err"); })
+      .finally(function () { button.disabled = false; });
+  };
+
+  $("reloadBtn").onclick = function () {
+    var button = $("reloadBtn");
+    button.disabled = true;
+    api("/api/admin/reload", { method: "POST" })
+      .then(function (data) {
+        state = data.settings;
+        fillForm();
+        renderToolStatus(data.tools);
+        $("refList").dataset.loaded = "";
+        toast("已重读配置并重拉工具", "ok");
+      })
+      .catch(function (error) { toast(error.message, "err"); })
+      .finally(function () { button.disabled = false; });
+  };
+
+  $("refreshTools").onclick = function () {
+    var button = $("refreshTools");
+    button.disabled = true;
+    $("toolStatus").textContent = "正在拉取…";
+    api("/api/admin/mcp/refresh", { method: "POST" })
+      .then(function (data) {
+        renderToolStatus(data);
+        toast("拉到 " + data.tool_count + " 个工具", data.errors.length ? "" : "ok");
+      })
+      .catch(function (error) { toast(error.message, "err"); })
+      .finally(function () { button.disabled = false; });
+  };
+
+  $("addModel").onclick = function () {
+    state.models.push({ id: "", label: "", desc: "", thinking: "adaptive", primary: true });
+    renderModels();
+  };
+
+  $("addServer").onclick = function () {
+    state.mcp_servers.push({
+      id: "", name: "", url: "", token: "", enabled: true, has_token: false
+    });
+    renderServers();
+  };
+
+  // ---------- 入口 ----------
+
+  function start() {
+    api("/api/admin/settings").then(function (data) {
+      state = data.settings;
+      $("login").classList.add("hide");
+      $("app").classList.remove("hide");
+      fillForm();
+      renderToolStatus(data.tools);
+    }).catch(function (error) {
+      $("loginErr").textContent = error.message;
+      $("loginErr").classList.remove("hide");
+    });
+  }
+
+  if (token) start();
+})();
+</script>
+</body>
+</html>

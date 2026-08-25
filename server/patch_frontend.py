@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""给 index.html 打三个补丁。幂等，重复跑不会重复改。
+"""给 index.html 打四个补丁。幂等，重复跑不会重复改。
 
     python3 server/patch_frontend.py /var/www/chatnest-ui/index.html
 
@@ -18,6 +18,11 @@ summary 条目时才创建——两个条件一错开，卡片就在 DOM 里永�
 补丁三：接上自定义 CSS。
 在 </head> 前插一行 `<link href="/api/custom.css">`。CSS 正文存在控制台，
 改完刷新页面即生效，index.html 不再动。
+
+补丁四：思考链折叠改本地生成，不再调模型。
+原本思考结束后会调一次 /api/thinking-summary 把本地预览换成模型精炼的
+摘要再折进气泡。后端那个接口已经不调模型直接返回空，这里把折叠逻辑
+换成同步用本地的 thoughtPreview 触发，不发请求也不等网络。
 """
 
 import re
@@ -54,6 +59,72 @@ BOOT_REPLACEMENT = (
 CSS_LINK = (
     '<link rel="stylesheet" href="/api/custom.css" '
     f'data-{CSS_MARK}="1">\n'
+)
+
+# 思考链折叠：原文调 /api/thinking-summary 换摘要再折叠。
+THINKING_FOLD_NEEDLE = (
+    "function _maybeFetchThinkingSummary(row){"
+    "const phases=_getPhases(row);"
+    "const tp=phases.find(p=>p.type==='thinking'&&p.processText);"
+    "if(!tp||tp._summaryFetched)return;"
+    "tp._summaryFetched=true;"
+    "_setPhases(row,phases);"
+    "fetchThinkingSummary(tp.processText).then(s=>{"
+    "if(!s)return;"
+    "const ps=_getPhases(row);"
+    "const p=ps.find(x=>x.id===tp.id);"
+    "if(!p)return;"
+    "const clean=dedupeSummaryText(s);"
+    "p.summary=clean;p.title=clean;"
+    "_setPhases(row,ps);"
+    "const msgRow=row.closest('.msg-claude');"
+    "if(!msgRow)return;"
+    "row.style.display='none';"
+    "foldThinkingIntoBubble(msgRow,tp.processText);"
+    "const sum=msgRow.querySelector('.ai-bubble > .thinking-summary');"
+    "if(sum){"
+    "sum.classList.add('show');"
+    "setThoughtSummary(sum,tp.processText,clean);"
+    "const snap=tp.processText;"
+    "sum.onclick=()=>{$('thoughtContent').textContent=snap;sheet('thought',true)};"
+    "syncAiBubble(sum.closest('.ai-bubble'))"
+    "}"
+    "}).catch(()=>{})"
+    "}"
+)
+
+THINKING_FOLD_REPLACEMENT = (
+    "function _maybeFetchThinkingSummary(row){"
+    "const phases=_getPhases(row);"
+    "const tp=phases.find(p=>p.type==='thinking'&&p.processText);"
+    "if(!tp||tp._summaryFetched)return;"
+    "tp._summaryFetched=true;"
+    "_setPhases(row,phases);"
+    # 同步走本地预览，不再发网络请求；tp.summary 是流式时 thoughtPreview
+    # 已经算好的那句，兜底再算一次防止是空的。
+    "(function(){"
+    "const s=tp.summary||thoughtPreview(tp.processText);"
+    "if(!s)return;"
+    "const ps=_getPhases(row);"
+    "const p=ps.find(x=>x.id===tp.id);"
+    "if(!p)return;"
+    "const clean=s;"
+    "p.summary=clean;p.title=clean;"
+    "_setPhases(row,ps);"
+    "const msgRow=row.closest('.msg-claude');"
+    "if(!msgRow)return;"
+    "row.style.display='none';"
+    "foldThinkingIntoBubble(msgRow,tp.processText);"
+    "const sum=msgRow.querySelector('.ai-bubble > .thinking-summary');"
+    "if(sum){"
+    "sum.classList.add('show');"
+    "setThoughtSummary(sum,tp.processText,clean);"
+    "const snap=tp.processText;"
+    "sum.onclick=()=>{$('thoughtContent').textContent=snap;sheet('thought',true)};"
+    "syncAiBubble(sum.closest('.ai-bubble'))"
+    "}"
+    "})()"
+    "}"
 )
 
 # 上一版补丁：整段 script 插在 </body> 之前。认出来就撕掉。
@@ -107,6 +178,18 @@ def patch_css_link(text: str) -> tuple[str, str]:
     return text[:index] + CSS_LINK + text[index:], "自定义 CSS：已接上"
 
 
+def patch_thinking_fold(text: str) -> tuple[str, str]:
+    """思考链折叠改本地生成，不再调 /api/thinking-summary。"""
+    if THINKING_FOLD_REPLACEMENT in text:
+        return text, "思考链折叠：已打过，跳过"
+    if THINKING_FOLD_NEEDLE not in text:
+        return text, "思考链折叠：没找到目标函数（上游可能改过），未改"
+    return (
+        text.replace(THINKING_FOLD_NEEDLE, THINKING_FOLD_REPLACEMENT, 1),
+        "思考链折叠：已改成本地生成，不再调模型",
+    )
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         print(__doc__)
@@ -126,7 +209,7 @@ def main() -> int:
     text, note = strip_old(text)
     if note:
         notes.append(note)
-    for patcher in (patch_traces, patch_boot, patch_css_link):
+    for patcher in (patch_traces, patch_boot, patch_css_link, patch_thinking_fold):
         text, note = patcher(text)
         notes.append(note)
 

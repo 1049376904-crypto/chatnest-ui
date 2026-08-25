@@ -421,13 +421,6 @@ async def chat(body: ChatBody) -> StreamingResponse:
                         "content": content,
                         "is_error": chunk.get("is_error", False),
                     })
-                elif event == "trace_summary":
-                    # 必须插在 traces 最前面：前端按 traces[0] 找 summary，
-                    # 找到才会给工具卡片配一个能点开的按钮。
-                    text = chunk.get("text") or ""
-                    if text:
-                        response_traces.insert(0, {"type": "summary", "text": text})
-                        yield sse("trace_summary", {"text": text})
                 elif event == "done":
                     assistant_message_id = store.complete_turn(
                         conv_id, response_text, response_thinking, response_traces
@@ -470,23 +463,14 @@ async def chat(body: ChatBody) -> StreamingResponse:
 
 @app.post("/api/thinking-summary", dependencies=AUTHED)
 async def thinking_summary(body: ThinkingSummaryBody) -> dict:
-    try:
-        return {"summary": await llm.summarize_thinking(body.thinking)}
-    except Exception:
-        logger.exception("thinking summary failed")
-        return {"summary": ""}
+    # 不再调模型。前端拿到空摘要就不折叠，完整思考链直接显示。
+    return {"summary": ""}
 
 
 @app.post("/api/tool-caption", dependencies=AUTHED)
 async def tool_caption(body: ToolCaptionBody) -> dict:
-    try:
-        caption = await llm.summarize_tool_use(
-            body.tool_name, body.tool_input, body.tool_output
-        )
-        return {"caption": caption}
-    except Exception:
-        logger.exception("tool caption failed")
-        return {"caption": ""}
+    # 不再调模型。前端拿到空 caption 就保留默认的工具名显示。
+    return {"caption": ""}
 
 
 # ---------- 会话 ----------

@@ -406,7 +406,9 @@ def main() -> int:
 
     from server.main import app
 
-    public = {"/health", "/api/auth", "/api/models", "/api/splash"}
+    # /api/custom.css 故意不鉴权：<link> 标签带不了 Authorization 头，
+    # 而且 CSS 正文里没有秘密。
+    public = {"/health", "/api/auth", "/api/models", "/api/splash", "/api/custom.css"}
     naked = [
         route.path
         for route in app.routes
@@ -427,8 +429,11 @@ def main() -> int:
         "/api/diary", "/api/calendar", "/api/calendar/{date}",
         "/api/upload", "/api/avatars", "/api/thinking-summary",
         "/api/tool-caption", "/api/splash", "/api/warmup",
+        "/api/custom.css",
         "/api/admin/settings", "/api/admin/reload",
         "/api/admin/mcp/refresh", "/api/admin/mcp/probe",
+        "/api/admin/css/checkup", "/api/admin/css/reference",
+        "/api/admin/css/snippets",
     }
     check("接口都在", expected <= paths, str(sorted(expected - paths)))
 

@@ -6,6 +6,10 @@
 
 工具调用走 MCP：`tools` 字段带上工具清单，模型说要调哪个，
 这边去 MCP server 执行，把结果拼回 messages 再问一遍，直到它不再要工具。
+
+关于模型消耗：聊天之外的「装饰性」摘要（工具标题、思考链摘要、
+工具轮次摘要）一律不调模型——那些是给界面好看用的，不配烧 token。
+保留的只有聊天本身，以及手动触发的长期印象生成。
 """
 
 import json
@@ -284,8 +288,11 @@ async def stream_chat(
 ) -> AsyncIterator[dict[str, Any]]:
     """流式拉回复，需要工具就自己调完再接着说。
 
-    产出 thinking / delta / tool_use / tool_result / trace_summary / done。
+    产出 thinking / delta / tool_use / tool_result / done。
     不在这里写库也不在这里拼 SSE，那是 main.py 的事。
+
+    注意：这里不生成任何「装饰性摘要」。工具卡片标题、思考链摘要都
+    由前端本地处理（直接显示工具名 / 完整思考链），零额外模型消耗。
     """
     tools: list[dict[str, Any]] = []
     if settings.tools_enabled():
@@ -299,9 +306,6 @@ async def stream_chat(
     working = list(messages)
     max_rounds = settings.max_tool_rounds()
     hit_limit = True
-    # 攒下这一轮调过哪些工具，最后给前端一句概括用。
-    called: list[tuple[str, str, str]] = []
-    saw_thinking = False
 
     for _ in range(max_rounds):
         pending: list[dict[str, Any]] = []
@@ -311,8 +315,6 @@ async def stream_chat(
                 pending = chunk["tool_calls"]
                 assistant_text = chunk["text"]
                 continue
-            if chunk["event"] == "thinking":
-                saw_thinking = True
             yield chunk
 
         if not pending:
@@ -372,7 +374,6 @@ async def stream_chat(
                         call["name"], is_error, len(output), output[:2000],
                     )
 
-            called.append((call["name"], raw_args, output))
             yield {
                 "event": "tool_result",
                 "tool_use_id": call["id"],
@@ -392,16 +393,6 @@ async def stream_chat(
             "text": f"\n\n[连续调用工具 {max_rounds} 轮仍未结束，已停止]",
         }
 
-    # 有工具调用、但模型没吐思考链时才补这一句：前端历史渲染靠它
-    # 生成那个能展开工具卡片的按钮，没有的话卡片会被折起来打不开。
-    if called and not saw_thinking:
-        try:
-            summary = await summarize_trace_batch(called)
-            if summary:
-                yield {"event": "trace_summary", "text": summary}
-        except Exception:
-            logger.exception("工具摘要失败，跳过")
-
     yield {"event": "done"}
 
 
@@ -410,7 +401,7 @@ async def complete(
     model: str | None = None,
     max_tokens: int = 300,
 ) -> str:
-    """非流式一句话。给两条摘要接口用，默认走便宜模型。"""
+    """非流式一句话。只给长期印象生成用（手动触发），默认便宜模型。"""
     payload = {
         "model": model or settings.summary_model(),
         "messages": messages,
@@ -437,70 +428,11 @@ async def complete(
     return (content or "").strip()
 
 
-async def summarize_trace_batch(calls: list[tuple[str, str, str]]) -> str:
-    """把这一轮调过的工具概括成一句话，给前端那个折叠按钮当标题。"""
-    if not calls:
-        return ""
-    lines = []
-    for name, arguments, output in calls[:10]:
-        lines.append(
-            f"工具 {name}\n参数：{arguments[:400]}\n结果：{output[:600]}"
-        )
-    return await complete(
-        [
-            {
-                "role": "system",
-                "content": (
-                    "用一句 15-25 字的中文概括这一轮调用了什么工具、拿到了什么。"
-                    "只输出那一句，不要引号、不要前缀、不要分条。"
-                ),
-            },
-            {"role": "user", "content": "\n\n".join(lines)[:8000]},
-        ],
-        max_tokens=100,
-    )
-
-
-async def summarize_thinking(thinking: str) -> str:
-    if not thinking.strip():
-        return ""
-    return await complete(
-        [
-            {
-                "role": "system",
-                "content": (
-                    "用一句 15-20 字的中文概括这段思考在干什么。"
-                    "只输出那一句，不要引号、不要前缀。"
-                ),
-            },
-            {"role": "user", "content": thinking[:8000]},
-        ],
-        max_tokens=80,
-    )
-
-
-async def summarize_tool_use(name: str, tool_input: Any, tool_output: str) -> str:
-    detail = json.dumps(tool_input, ensure_ascii=False)[:1500]
-    return await complete(
-        [
-            {
-                "role": "system",
-                "content": (
-                    "用一句 15-20 字的中文说明这次工具调用做了什么。"
-                    "只输出那一句。"
-                ),
-            },
-            {
-                "role": "user",
-                "content": f"工具：{name}\n参数：{detail}\n结果：{tool_output[:1500]}",
-            },
-        ],
-        max_tokens=80,
-    )
-
-
 async def generate_memory_summary(transcript: str) -> str:
-    """从最近几个对话里整理长期印象。用主模型，这一条质量重于价钱。"""
+    """从最近几个对话里整理长期印象。用主模型，这一条质量重于价钱。
+
+    这是手动触发的（/api/memory-summary/generate），不是自动烧。
+    """
     if not transcript.strip():
         return ""
     return await complete(
